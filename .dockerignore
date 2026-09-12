@@ -3,6 +3,7 @@ smspub
 smspub.*
 config.json
 config.json.*
+conf/
 data/
 docs/
 *.log
