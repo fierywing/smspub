@@ -14,10 +14,9 @@ services:
     image: smspub:local
     container_name: smspub
     restart: unless-stopped
-    # Web 端口：改宿主机端口只需设 SMSPUB_PORT（.env 文件或环境变量均可，默认 8080）；
-    # 容器内部端口经 -listen 钉死为 :8080，与 config.json 的 listen 解耦。
+    # Web 端口：改冒号左边的宿主机端口即可（容器内固定 8080，由 -listen 钉死）。
     ports:
-      - "${SMSPUB_PORT:-8080}:8080"
+      - "8080:8080"
     command: ["-c", "/app/conf/config.json", "-listen", ":8080"]
     volumes:
       # /dev 整挂，by-path 符号链接随宿主机实时变化，重插换号自动跟随。
