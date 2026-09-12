@@ -22,8 +22,12 @@ services:
       # conf/ 与 data/ 整目录挂载（见文件头 2），重启容器不丢配置与历史。
       - ./conf:/app/conf
       - ./data:/app/data
-    # 放行字符设备主设备号 188（ttyUSB*）的读写。按设备号而非节点名，
-    # 故 ttyUSB 编号变化后无需改配置。
+    # 放行 USB 串口设备的读写，按主设备号而非节点名授权：
+    #   c 188:* —— ttyUSB*（usb-serial 驱动族，绝大多数 USB 模块，如 Quectel/移远）
+    #   c 166:* —— ttyACM*（CDC-ACM 类，部分模块/开发板枚举为这种）
+    # 次设备号通配，故 ttyUSB 编号重排、新插模块都无需改配置。
+    # 若模块枚举为其他类型（如主板 RS232 的 ttyS*，主设备号 4），照格式加一行即可。
     device_cgroup_rules:
       - "c 188:* rwm"
+      - "c 166:* rwm"
     working_dir: /app
