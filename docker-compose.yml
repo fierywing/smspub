@@ -30,4 +30,3 @@ services:
     device_cgroup_rules:
       - "c 188:* rwm"
       - "c 166:* rwm"
-    working_dir: /app
