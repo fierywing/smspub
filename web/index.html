@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>短信转发中心</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%233b82f6'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='4' stroke-linecap='round'%3E%3Cpath d='M20 29a17 17 0 0 1 24 0'/%3E%3Cpath d='M13 22a27 27 0 0 1 38 0' opacity='.55'/%3E%3C/g%3E%3Ccircle cx='32' cy='35' r='5' fill='%23fff'/%3E%3Cpath d='M32 40v14' stroke='%23fff' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4.9 10.9a10 10 0 0 1 14.2 0" opacity=".5"/><path d="M7.8 13.8a6 6 0 0 1 8.4 0"/><circle cx="12" cy="17" r="1.8" fill="currentColor" stroke="none"/><path d="M12 19.5v2.5"/></svg></span>
+      <h1>短信转发中心</h1>
+      <span class="conn-badge" id="connBadge" title="后端连接状态"><span class="dot"></span>演示模式</span>
+    </div>
+    <nav class="topbar-tabs">
+      <a class="tab active" href="./index.html">首页</a>
+      <a class="tab" href="./history.html">历史信息</a>
+    </nav>
+    <div class="topbar-right">
+      <button class="icon-btn" id="themeBtn" title="切换明暗主题">
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+      <button class="icon-btn" id="settingsBtn" title="设置">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main id="main">
+    <div class="card-grid" id="cardGrid"></div>
+    <div class="empty-hint" id="emptyHint" hidden>暂无卡片，插入模块后将自动检测添加</div>
+  </main>
+
+  <!-- 发送短信弹窗 -->
+  <div class="modal-backdrop" id="smsModal" hidden>
+    <div class="modal">
+      <div class="modal-head"><h2 id="smsModalTitle">发送短信</h2><button class="icon-btn close-btn" data-close="smsModal">✕</button></div>
+      <div class="modal-body">
+        <label class="field"><span>发件卡</span><span class="from-card"><span class="flag" id="smsFromFlag"></span><input id="smsFrom" readonly></span></label>
+        <label class="field"><span>收件人号码</span><input id="smsTo" type="tel" placeholder="如 13800138000 或 +85212345678"></label>
+        <label class="field"><span>短信内容</span><textarea id="smsText" rows="4" placeholder="输入短信内容（70 字以内为单条计费）"></textarea></label>
+        <p class="field-tip" id="smsCounter">0 字 · 1 条短信</p>
+      </div>
+      <div class="modal-foot"><button class="btn ghost" data-close="smsModal">取消</button><button class="btn primary" id="smsSendBtn">发送</button></div>
+    </div>
+  </div>
+
+  <!-- Ping 测试弹窗 -->
+  <div class="modal-backdrop" id="pingModal" hidden>
+    <div class="modal">
+      <div class="modal-head"><h2 id="pingModalTitle">Ping 测试</h2><button class="icon-btn close-btn" data-close="pingModal">✕</button></div>
+      <div class="modal-body">
+        <div class="ping-result" id="pingResult">正在激活数据连接…</div>
+      </div>
+      <div class="modal-foot"><button class="btn ghost" data-close="pingModal">关闭</button><button class="btn primary" id="pingRetryBtn">重新测试</button></div>
+    </div>
+  </div>
+
+  <!-- 历史短信弹窗（点击“查看全部”时在小屏使用，卡片内展开为主交互） -->
+  <div class="modal-backdrop" id="historyModal" hidden>
+    <div class="modal modal-wide">
+      <div class="modal-head"><h2 id="historyModalTitle">历史短信</h2><button class="icon-btn close-btn" data-close="historyModal">✕</button></div>
+      <div class="modal-body"><div class="history-list" id="historyList"></div></div>
+    </div>
+  </div>
+
+  <!-- 设置弹窗 -->
+  <div class="modal-backdrop" id="settingsModal" hidden>
+    <div class="modal modal-wide">
+      <div class="modal-head"><h2>设置</h2><button class="icon-btn close-btn" data-close="settingsModal">✕</button></div>
+      <div class="modal-body">
+        <div class="tabs">
+          <button class="tab active" data-tab="tabPush">推送通道</button>
+          <button class="tab" data-tab="tabSystem">系统</button>
+        </div>
+
+        <section id="tabPush" class="tab-pane active">
+          <div class="channel-list" id="channelList"></div>
+          <button class="btn ghost add-btn" id="addChannelBtn">＋ 添加通道</button>
+        </section>
+
+        <section id="tabSystem" class="tab-pane">
+          <label class="field"><span>管理员指令说明</span>
+            <div class="cmd-help">
+              <p>用管理员号码向本卡发送短信即可远程控制：</p>
+              <p><code>SMS:号码:内容</code> — 通过该卡转发发送短信</p>
+              <p><code>RESET</code> — 重启设备</p>
+            </div>
+          </label>
+          <button class="btn danger" id="rebootBtn">重启程序</button>
+        </section>
+      </div>
+      <div class="modal-foot"><button class="btn ghost" data-close="settingsModal">取消</button><button class="btn primary" id="saveSettingsBtn">保存全部</button></div>
+    </div>
+  </div>
+
+  <!-- 单卡设置弹窗（首页卡片齿轮进入） -->
+  <div class="modal-backdrop" id="cardCfgModal" hidden>
+    <div class="modal">
+      <div class="modal-head"><h2 id="cardCfgTitle">卡片设置</h2><button class="icon-btn close-btn" data-close="cardCfgModal">✕</button></div>
+      <div class="modal-body">
+        <div class="cfg-grid" id="cardCfgGrid"></div>
+      </div>
+      <div class="modal-foot"><button class="btn danger" id="cardDelBtn">删除卡片</button><span class="spacer"></span><button class="btn ghost" data-close="cardCfgModal">取消</button><button class="btn primary" id="cardSaveBtn">保存</button></div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast-wrap" id="toastWrap"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

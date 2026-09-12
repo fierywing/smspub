@@ -1,0 +1,13 @@
+# 构建产物与本地状态不进镜像
+smspub
+smspub.*
+config.json
+config.json.*
+data/
+docs/
+*.log
+
+# 版本控制与编辑器
+.git
+.gitignore
+.zcode/

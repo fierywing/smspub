@@ -1,0 +1,27 @@
+# 编译产物
+/smspub
+smspub-arm64
+smspub-amd64
+smspub-*
+
+# 私有数据与配置：含 Web 密码与真实短信内容，严禁入库
+config.json
+config.json.bak-*
+conf/
+data/
+
+# 本地备份二进制
+smspub.bak-*
+
+# 开发过程记录与缓存
+.zcode/
+__pycache__/
+*.pyc
+
+# 运行日志
+*.log
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store

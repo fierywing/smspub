@@ -1,0 +1,29 @@
+# smspub 容器编排。
+#
+# 两个必须整目录挂载、不能挂单文件的地方：
+#   1) /dev —— 串口经 USB hub 接入，重插后 ttyUSB 编号会整体重排，
+#      且需要按设备号放行（实测三种写法只有这一种能真正 open 串口）：
+#        -v /dev:/dev              仅挂载   → Operation not permitted
+#        --device /dev:/dev        仅声明   → 容器内看不到 by-path 链接
+#        -v /dev:/dev + cgroup 规则 → 可正常 open ✓（本文件采用）
+#   2) conf/ —— 配置保存走「写 .tmp 再 rename」，单文件 bind mount 挂的是
+#      inode，rename 会报 "device or resource busy"，容器内就存不了配置。
+services:
+  smspub:
+    build: .
+    image: smspub:local
+    container_name: smspub
+    restart: unless-stopped
+    # host 网络：Web 直接监听 :8080，无需端口映射。
+    network_mode: host
+    volumes:
+      # /dev 整挂，by-path 符号链接随宿主机实时变化，重插换号自动跟随。
+      - /dev:/dev
+      # conf/ 与 data/ 整目录挂载（见文件头 2），重启容器不丢配置与历史。
+      - ./conf:/app/conf
+      - ./data:/app/data
+    # 放行字符设备主设备号 188（ttyUSB*）的读写。按设备号而非节点名，
+    # 故 ttyUSB 编号变化后无需改配置。
+    device_cgroup_rules:
+      - "c 188:* rwm"
+    working_dir: /app

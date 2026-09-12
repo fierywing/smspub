@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>历史消息 · 短信转发中心（演示）</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="history.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%233b82f6'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='4' stroke-linecap='round'%3E%3Cpath d='M20 29a17 17 0 0 1 24 0'/%3E%3Cpath d='M13 22a27 27 0 0 1 38 0' opacity='.55'/%3E%3C/g%3E%3Ccircle cx='32' cy='35' r='5' fill='%23fff'/%3E%3Cpath d='M32 40v14' stroke='%23fff' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4.9 10.9a10 10 0 0 1 14.2 0" opacity=".5"/><path d="M7.8 13.8a6 6 0 0 1 8.4 0"/><circle cx="12" cy="17" r="1.8" fill="currentColor" stroke="none"/><path d="M12 19.5v2.5"/></svg></span>
+      <h1>历史消息</h1>
+      <span class="conn-badge" id="connBadge" title="后端连接状态"><span class="dot"></span>演示模式</span>
+    </div>
+    <nav class="topbar-tabs">
+      <a class="tab" href="./demo.html">首页</a>
+      <a class="tab active" href="./demo-history.html">历史信息</a>
+    </nav>
+    <div class="topbar-right">
+      <button class="icon-btn" id="themeBtn" title="切换明暗主题">
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="page-wrap">
+    <div class="page-head">
+      <div>
+        <h2>历史消息</h2>
+        <p class="page-sub">全部卡片的收发短信记录 · 支持关键词 / 正则 / 时间范围检索</p>
+      </div>
+      <div class="stats">
+        <div class="stat"><b id="statAll">0</b><span>全部消息</span></div>
+        <div class="stat"><b id="statToday">0</b><span>今日</span></div>
+        <div class="stat"><b id="statIn">0</b><span>收到</span></div>
+        <div class="stat"><b id="statOut">0</b><span>发出</span></div>
+      </div>
+    </div>
+
+    <!-- 搜索区 -->
+    <section class="panel search-panel">
+      <form class="search-row" id="searchForm">
+        <select class="card-select" id="cardFilter" title="按接码卡片筛选" aria-label="按接码卡片筛选">
+          <option value="">全部卡片</option>
+        </select>
+        <div class="seg" role="group" aria-label="搜索模式">
+          <button type="button" class="active" id="modeKeyword">关键词</button>
+          <button type="button" id="modeRegex">正则</button>
+        </div>
+        <input class="search-input" id="searchInput" autocomplete="off"
+               placeholder="搜索号码或内容，支持 * 与 ? 通配符">
+        <button type="submit" class="btn primary mini">搜索</button>
+        <button type="button" class="btn ghost mini" id="advToggle">高级筛选 ▾</button>
+      </form>
+      <p class="regex-error" id="regexError" role="alert" hidden></p>
+
+      <div class="adv-panel" id="advPanel" hidden>
+        <label class="adv-field"><span>发件人 / 号码</span><input id="advSender" placeholder="如 10086 或 95555"></label>
+        <label class="adv-field"><span>开始日期</span><input type="date" id="advFrom"></label>
+        <label class="adv-field"><span>结束日期</span><input type="date" id="advTo"></label>
+        <div class="adv-field"><span>快捷范围</span>
+          <div class="presets">
+            <button type="button" class="btn ghost mini preset" data-days="0">今天</button>
+            <button type="button" class="btn ghost mini preset" data-days="7">近 7 天</button>
+            <button type="button" class="btn ghost mini preset" data-days="30">近 30 天</button>
+            <button type="button" class="btn ghost mini preset" data-days="clear">清除</button>
+          </div>
+        </div>
+        <div class="adv-actions">
+          <button type="button" class="btn primary mini" id="advApply">应用</button>
+          <button type="button" class="btn ghost mini" id="advReset">重置</button>
+        </div>
+      </div>
+
+      <div class="chips" id="chips" hidden></div>
+    </section>
+
+    <!-- 短信列表（大卡片） -->
+    <section class="panel table-panel">
+      <div class="toolbar">
+        <span class="sel-info">已选 <b id="selCount">0</b> 条</span>
+        <button type="button" class="link-btn" id="selAllFiltered" hidden></button>
+        <button type="button" class="link-btn" id="selClear" hidden>清除选择</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn danger mini" id="delBtn" disabled>删除所选</button>
+      </div>
+
+      <div class="table-wrap">
+        <table id="histTable">
+          <thead>
+            <tr>
+              <th class="col-check"><input type="checkbox" id="checkAll" title="全选本页"></th>
+              <th class="col-sender"><button type="button" class="th-sort" data-sort="sender" title="按发件方排序（号码升序）">发件人 <span class="ind"></span></button></th>
+              <th>内容</th>
+              <th class="col-time-h"><button type="button" class="th-sort" data-sort="time" title="按时间排序">时间 <span class="ind"></span></button></th>
+              <th class="col-actions">操作</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+        <div class="empty-box" id="emptyBox" hidden>
+          <div class="empty-ico">📭</div>
+          <p>没有匹配的短信</p>
+          <p class="empty-tip">试试调整搜索关键词或筛选条件</p>
+        </div>
+        <div class="empty-box" id="errorBox" hidden>
+          <div class="empty-ico">⚠️</div>
+          <p>加载历史消息失败</p>
+          <p class="empty-tip">请检查网络与登录状态后重试</p>
+          <p><button type="button" class="btn" id="retryBtn">重试</button></p>
+        </div>
+      </div>
+
+      <div class="pg-bar">
+        <span class="pg-info" id="pgInfo">—</span>
+        <label class="pg-size">每页
+          <select id="pageSize">
+            <option>10</option><option selected>20</option><option>50</option><option>100</option>
+          </select> 条
+        </label>
+        <div class="pg-nums-wrap">
+          <button type="button" class="pg-btn" id="pgFirst" title="首页">«</button>
+          <button type="button" class="pg-btn" id="pgPrev" title="上一页">‹</button>
+          <span class="pg-nums" id="pgNums"></span>
+          <button type="button" class="pg-btn" id="pgNext" title="下一页">›</button>
+          <button type="button" class="pg-btn" id="pgLast" title="末页">»</button>
+        </div>
+        <label class="pg-jump">跳至 <input type="number" id="pgJump" min="1" value="1"> 页</label>
+        <button type="button" class="btn ghost mini" id="pgJumpBtn">跳转</button>
+      </div>
+    </section>
+
+    <p class="foot-note">短信历史记录</p>
+  </div>
+
+  <!-- 删除确认弹窗 -->
+  <div class="modal-backdrop" id="delModal" role="dialog" aria-modal="true" aria-labelledby="delText" hidden>
+    <div class="modal">
+      <div class="modal-head"><h2>删除短信</h2><button class="icon-btn close-btn" data-close="delModal" aria-label="关闭">✕</button></div>
+      <div class="modal-body">
+        <p id="delText" class="del-text">确定删除所选短信吗？</p>
+        <p class="field-tip" id="delTip">演示模式：仅从前端列表移除，不影响后端数据。</p>
+      </div>
+      <div class="modal-foot"><button class="btn ghost" data-close="delModal">取消</button><button class="btn danger" id="delConfirmBtn">删除</button></div>
+    </div>
+  </div>
+
+  <!-- 消息详情弹窗 -->
+  <div class="modal-backdrop" id="detailModal" role="dialog" aria-modal="true" hidden>
+    <div class="modal">
+      <div class="modal-head"><h2>消息详情</h2><button class="icon-btn close-btn" data-close="detailModal" aria-label="关闭">✕</button></div>
+      <div class="modal-body">
+        <div class="detail-meta">
+          <span class="d-label">发件人</span><span id="dSender"></span>
+          <span class="d-label">时间</span><span id="dTime"></span>
+          <span class="d-label">卡片</span><span id="dCard"></span>
+        </div>
+        <div class="detail-text" id="dText"></div>
+      </div>
+      <div class="modal-foot"><button class="btn ghost" id="dCopyBtn">复制内容</button><button class="btn primary" data-close="detailModal">关闭</button></div>
+    </div>
+  </div>
+
+  <div class="toast-wrap" id="toastWrap"></div>
+
+  <script src="demo.js"></script>
+  <script src="history.js"></script>
+</body>
+</html>
