@@ -4,6 +4,9 @@ smspub-arm64
 smspub-amd64
 smspub-*
 
+# 本机部署覆盖（追加本地构建，不入库）
+docker-compose.override.yml
+
 # 私有数据与配置：含 Web 密码与真实短信内容，严禁入库
 config.json
 config.json.bak-*
