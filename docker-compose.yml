@@ -10,8 +10,9 @@
 #      inode，rename 会报 "device or resource busy"，容器内就存不了配置。
 services:
   smspub:
-    build: .
-    image: smspub:local
+    # Docker Hub 镜像（CI 自动构建，amd64/arm64 双架构）。
+    # 从源码构建替代拉取：docker build -t fierywing/smspub:latest .
+    image: fierywing/smspub:latest
     container_name: smspub
     restart: unless-stopped
     # Web 端口：改冒号左边的宿主机端口即可（容器内固定 8080，由 -listen 钉死）。
