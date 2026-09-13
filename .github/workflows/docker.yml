@@ -1,13 +1,12 @@
 # 构建多架构镜像并推送到 Docker Hub。
 # 前置：仓库 Secrets 里配置 DOCKERHUB_USERNAME 与 DOCKERHUB_TOKEN
 #（Docker Hub → Account Settings → Personal access tokens，权限 Read & Write）。
-# 触发：push 到 main（打 latest 标签）、push v* 标签（打版本标签）、网页手动触发。
+# 触发：push 到 main 或网页手动触发，构建后打 latest 标签。
 name: docker
 
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   workflow_dispatch:
 
 jobs:
