@@ -37,6 +37,10 @@ const (
 	cgactTimeout          = 15 * time.Second // PDP 激活/去激活超时
 	urcQueueSize          = 256              // URC 队列长度（满则丢弃并记日志）
 	maxDrainIdx           = 40               // CMGL 不可用时按索引补收的上限（典型 SIM 容量）
+
+	// USB 复位自愈策略（可由 config.tuning 覆盖）。
+	defaultUSBResetFails    = 3                 // 连续初始化失败多少轮触发复位
+	defaultUSBResetThrottle = 180 * time.Second // 同模块两次复位最小间隔
 )
 
 // errNoPingReply ping 命令成功返回但响应中没有可解析的成功 reply。
@@ -75,6 +79,10 @@ type Modem struct {
 	running atomic.Bool   // 防止并发/重复 Run
 	backoff atomic.Int32  // 重连退避轮次（连接成功归零）
 
+	// lastUSBReset 最近一次 USB 自愈复位时刻（usbreset.go 的 maybeUSBReset）。
+	// 仅 Run goroutine 读写，不与其他 goroutine 并发，普通字段即可。
+	lastUSBReset time.Time
+
 	// —— 以下参数带契约默认值，仅供测试覆盖 ——
 	openPort       func(device string, baud int) (at.Port, error)
 	hbInterval     time.Duration
@@ -86,6 +94,9 @@ type Modem struct {
 	initTimeout    time.Duration
 	stepTimeout    time.Duration
 	cmgsTimeout    time.Duration
+
+	usbResetFails    int           // 触发 USB 复位所需连续初始化失败轮数
+	usbResetThrottle time.Duration // 同一模块两次 USB 复位的最小间隔
 }
 
 // New 创建 Modem，不打开串口（由 Run 负责）。Baud 为 0 视为 115200。
@@ -120,6 +131,9 @@ func New(cfg model.CardConfig, log *logger.Logger, cbs Callbacks) *Modem {
 		initTimeout:    defaultInitTimeout,
 		stepTimeout:    defaultStepTimeout,
 		cmgsTimeout:    defaultCMGSTimeout,
+
+		usbResetFails:    defaultUSBResetFails,
+		usbResetThrottle: defaultUSBResetThrottle,
 	}
 }
 
@@ -143,6 +157,12 @@ func (m *Modem) SetTiming(t model.TuningConfig) {
 	}
 	if t.JitterMs > 0 {
 		m.jitter = time.Duration(t.JitterMs) * time.Millisecond
+	}
+	if t.USBResetAfterFailures > 0 {
+		m.usbResetFails = t.USBResetAfterFailures
+	}
+	if t.USBResetThrottleSec > 0 {
+		m.usbResetThrottle = time.Duration(t.USBResetThrottleSec) * time.Second
 	}
 }
 
@@ -216,11 +236,17 @@ func (m *Modem) Run(ctx context.Context) {
 			//（stat 不产生 USB 流量），其余错误（占用/权限等）等满退避防热循环
 			delay := backoffDelay(m.reconnectDelay, m.reconnectMax, m.jitter, m.backoffAttempt())
 			if errors.Is(err, fs.ErrNotExist) {
+				// 设备不在总线上：复位无从谈起，不重置退避计数；若持续消失，
+				// hub 的设备消失告警会提醒人工（vanish.go）。
 				if !m.waitReconnect(ctx, delay) {
 					return
 				}
-			} else if !sleepCtx(ctx, delay) {
-				return
+			} else {
+				// 打开即失败（如 Errno 71）：设备还在总线上，复位可救。
+				m.maybeUSBReset()
+				if !sleepCtx(ctx, delay) {
+					return
+				}
 			}
 			m.backoffNext()
 			continue
@@ -232,6 +258,8 @@ func (m *Modem) Run(ctx context.Context) {
 				return
 			}
 			m.logf("error", "初始化失败: %v", err)
+			// 口能 open 但 AT 无应答：固件卡死的典型形态，复位可救。
+			m.maybeUSBReset()
 			if !sleepCtx(ctx, backoffDelay(m.reconnectDelay, m.reconnectMax, m.jitter, m.backoffAttempt())) {
 				return
 			}

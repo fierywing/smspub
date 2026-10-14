@@ -28,8 +28,14 @@ services:
     # 放行 USB 串口设备的读写，按主设备号而非节点名授权：
     #   c 188:* —— ttyUSB*（usb-serial 驱动族，绝大多数 USB 模块，如 Quectel/移远）
     #   c 166:* —— ttyACM*（CDC-ACM 类，部分模块/开发板枚举为这种）
+    #   c 189:* —— USB 设备节点 /dev/bus/usb/BBB/DDD：模块固件卡死时 modem 层发
+    #              USBDEVFS_RESET 自愈用（需 O_RDWR 打开节点）。节点默认
+    #              root:root 0664，容器用户打不开，需配套 udev 规则把节点交给
+    #              dialout 组，见 README「Docker 部署」的卡死自愈说明；
+    #              未配置 udev 时复位会因权限不足只记日志、不影响收发。
     # 次设备号通配，故 ttyUSB 编号重排、新插模块都无需改配置。
     # 若模块枚举为其他类型（如主板 RS232 的 ttyS*，主设备号 4），照格式加一行即可。
     device_cgroup_rules:
       - "c 188:* rwm"
       - "c 166:* rwm"
+      - "c 189:* rwm"

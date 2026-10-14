@@ -19,14 +19,16 @@ func TestTuningRoundTrip(t *testing.T) {
 	}
 	cfg := s.Get()
 	cfg.Tuning = &model.TuningConfig{
-		HeartbeatIntervalSec: 60,
-		HeartbeatFailures:    2,
-		PollIntervalSec:      300,
-		ReconnectBaseMs:      1000,
-		ReconnectMaxMs:       30000,
-		JitterMs:             5000,
-		DetectIntervalSec:    120,
-		ReadTimeoutMs:        400,
+		HeartbeatIntervalSec:  60,
+		HeartbeatFailures:     2,
+		PollIntervalSec:       300,
+		ReconnectBaseMs:       1000,
+		ReconnectMaxMs:        30000,
+		JitterMs:              5000,
+		DetectIntervalSec:     120,
+		ReadTimeoutMs:         400,
+		USBResetAfterFailures: 5,
+		USBResetThrottleSec:   90,
 	}
 	if err := s.Set(cfg); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -52,7 +54,8 @@ func TestTuningRoundTrip(t *testing.T) {
 	}
 	got := s2.Get().Tuning
 	if got == nil || got.HeartbeatIntervalSec != 60 || got.PollIntervalSec != 300 ||
-		got.ReconnectMaxMs != 30000 || got.DetectIntervalSec != 120 {
+		got.ReconnectMaxMs != 30000 || got.DetectIntervalSec != 120 ||
+		got.USBResetAfterFailures != 5 || got.USBResetThrottleSec != 90 {
 		t.Fatalf("tuning round-trip 失败: %+v", got)
 	}
 }
@@ -74,16 +77,17 @@ func TestTuningNegativeNormalized(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	cfg := s.Get()
-	cfg.Tuning = &model.TuningConfig{PollIntervalSec: -5, HeartbeatIntervalSec: -1}
+	cfg.Tuning = &model.TuningConfig{PollIntervalSec: -5, HeartbeatIntervalSec: -1, USBResetThrottleSec: -7}
 	if err := s.Set(cfg); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	if got := s.Get().Tuning; got.PollIntervalSec != 0 || got.HeartbeatIntervalSec != 0 {
+	if got := s.Get().Tuning; got.PollIntervalSec != 0 || got.HeartbeatIntervalSec != 0 || got.USBResetThrottleSec != 0 {
 		t.Fatalf("负值应归一化为 0: %+v", got)
 	}
 	// 0 = 契约默认
 	r := s.Get().Tuning.Resolved()
-	if r.PollIntervalSec != 20 || r.HeartbeatIntervalSec != 30 {
+	if r.PollIntervalSec != 20 || r.HeartbeatIntervalSec != 30 ||
+		r.USBResetAfterFailures != 3 || r.USBResetThrottleSec != 180 {
 		t.Fatalf("Resolved 默认值错误: %+v", r)
 	}
 }

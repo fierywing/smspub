@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"smspub/internal/logger"
 	"smspub/internal/model"
 )
 
@@ -75,25 +76,64 @@ func TestBackoffDelay(t *testing.T) {
 func TestSetTimingOverrides(t *testing.T) {
 	m, _, _ := newTestModem(t, model.CardConfig{})
 	m.SetTiming(model.TuningConfig{
-		HeartbeatIntervalSec: 60,
-		HeartbeatFailures:    2,
-		PollIntervalSec:      300,
-		ReconnectBaseMs:      1000,
-		ReconnectMaxMs:       30000,
-		JitterMs:             5000,
+		HeartbeatIntervalSec:  60,
+		HeartbeatFailures:     2,
+		PollIntervalSec:       300,
+		ReconnectBaseMs:       1000,
+		ReconnectMaxMs:        30000,
+		JitterMs:              5000,
+		USBResetAfterFailures: 5,
+		USBResetThrottleSec:   90,
 	})
 	if m.hbInterval != 60*time.Second || m.hbFailures != 2 ||
 		m.pollInterval != 300*time.Second ||
 		m.reconnectDelay != time.Second || m.reconnectMax != 30*time.Second ||
-		m.jitter != 5*time.Second {
-		t.Fatalf("SetTiming 未生效: hb=%v/%d poll=%v recon=%v/%v jitter=%v",
-			m.hbInterval, m.hbFailures, m.pollInterval, m.reconnectDelay, m.reconnectMax, m.jitter)
+		m.jitter != 5*time.Second ||
+		m.usbResetFails != 5 || m.usbResetThrottle != 90*time.Second {
+		t.Fatalf("SetTiming 未生效: hb=%v/%d poll=%v recon=%v/%v jitter=%v usbReset=%d/%v",
+			m.hbInterval, m.hbFailures, m.pollInterval, m.reconnectDelay, m.reconnectMax, m.jitter,
+			m.usbResetFails, m.usbResetThrottle)
 	}
 	// 0 值字段保留原默认
 	m2, _, _ := newTestModem(t, model.CardConfig{})
 	m2.SetTiming(model.TuningConfig{})
-	if m2.hbInterval != 80*time.Millisecond || m2.reconnectDelay != 20*time.Millisecond {
-		t.Fatalf("0 值字段不应覆盖: hb=%v recon=%v", m2.hbInterval, m2.reconnectDelay)
+	if m2.hbInterval != 80*time.Millisecond || m2.reconnectDelay != 20*time.Millisecond ||
+		m2.usbResetFails != defaultUSBResetFails || m2.usbResetThrottle != defaultUSBResetThrottle {
+		t.Fatalf("0 值字段不应覆盖: hb=%v recon=%v usbReset=%d/%v",
+			m2.hbInterval, m2.reconnectDelay, m2.usbResetFails, m2.usbResetThrottle)
+	}
+}
+
+// TestUSBResetPolicyOverride 覆盖生效时按 tuning 值判定触发轮数与节流窗口。
+func TestUSBResetPolicyOverride(t *testing.T) {
+	var calls int
+	old := usbResetFn
+	usbResetFn = func(dev string) error {
+		calls++
+		return nil
+	}
+	t.Cleanup(func() { usbResetFn = old })
+
+	m := &Modem{
+		cfg:              model.CardConfig{ID: "c1", Device: "/dev/serial/by-path/x"},
+		log:              logger.New(16),
+		usbResetFails:    2,
+		usbResetThrottle: 30 * time.Second,
+	}
+	m.backoffNext() // 第 1 轮失败：attempt=1，2 轮阈值下 1+1=2 已触发
+	m.maybeUSBReset()
+	if calls != 1 {
+		t.Fatalf("2 轮阈值下第 1 轮后应复位一次，得到 %d", calls)
+	}
+	m.backoffNext() // 第 2 轮：节流窗口内不重复
+	m.maybeUSBReset()
+	if calls != 1 {
+		t.Fatalf("节流窗口内重复复位，得到 %d", calls)
+	}
+	m.lastUSBReset = time.Now().Add(-31 * time.Second)
+	m.maybeUSBReset() // 超过 30s 节流：再次触发
+	if calls != 2 {
+		t.Fatalf("超过节流后应再次复位，得到 %d", calls)
 	}
 }
 

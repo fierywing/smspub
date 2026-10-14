@@ -231,6 +231,7 @@ func normalizeTuning(cfg model.Config) {
 		&t.HeartbeatIntervalSec, &t.HeartbeatFailures, &t.PollIntervalSec,
 		&t.ReconnectBaseMs, &t.ReconnectMaxMs, &t.JitterMs,
 		&t.DetectIntervalSec, &t.ReadTimeoutMs,
+		&t.USBResetAfterFailures, &t.USBResetThrottleSec,
 	} {
 		if *v < 0 {
 			*v = 0

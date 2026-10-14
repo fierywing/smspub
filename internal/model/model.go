@@ -75,14 +75,16 @@ type Config struct {
 // 所有字段 0 = 用契约默认值；负值由 config.Load/Set 归一化为 0。
 // 变更在进程重启或卡片重启后生效。
 type TuningConfig struct {
-	HeartbeatIntervalSec int `json:"heartbeat_interval_sec,omitempty"` // AT 心跳间隔，默认 30
-	HeartbeatFailures    int `json:"heartbeat_failures,omitempty"`     // 连续失败判失联次数，默认 3
-	PollIntervalSec      int `json:"poll_interval_sec,omitempty"`      // CSQ/CEREG? 轮询间隔，默认 20
-	ReconnectBaseMs      int `json:"reconnect_base_ms,omitempty"`      // 重连退避基数，默认 5000
-	ReconnectMaxMs       int `json:"reconnect_max_ms,omitempty"`       // 重连退避上限，默认 60000
-	JitterMs             int `json:"jitter_ms,omitempty"`              // 多卡错峰抖动幅度，默认 2000
-	DetectIntervalSec    int `json:"detect_interval_sec,omitempty"`    // 自动检测扫描周期，默认 30
-	ReadTimeoutMs        int `json:"read_timeout_ms,omitempty"`        // 串口读超时，默认 200
+	HeartbeatIntervalSec  int `json:"heartbeat_interval_sec,omitempty"`   // AT 心跳间隔，默认 30
+	HeartbeatFailures     int `json:"heartbeat_failures,omitempty"`       // 连续失败判失联次数，默认 3
+	PollIntervalSec       int `json:"poll_interval_sec,omitempty"`        // CSQ/CEREG? 轮询间隔，默认 20
+	ReconnectBaseMs       int `json:"reconnect_base_ms,omitempty"`        // 重连退避基数，默认 5000
+	ReconnectMaxMs        int `json:"reconnect_max_ms,omitempty"`         // 重连退避上限，默认 60000
+	JitterMs              int `json:"jitter_ms,omitempty"`                // 多卡错峰抖动幅度，默认 2000
+	DetectIntervalSec     int `json:"detect_interval_sec,omitempty"`      // 自动检测扫描周期，默认 30
+	ReadTimeoutMs         int `json:"read_timeout_ms,omitempty"`          // 串口读超时，默认 200
+	USBResetAfterFailures int `json:"usb_reset_after_failures,omitempty"` // 连续初始化失败多少轮触发 USB 复位自愈，默认 3
+	USBResetThrottleSec   int `json:"usb_reset_throttle_sec,omitempty"`   // 同一模块两次 USB 复位的最小间隔秒数，默认 180
 }
 
 // Resolved 把 0 值字段替换为契约默认值，返回可直接换算为时长的副本。
@@ -110,6 +112,12 @@ func (t TuningConfig) Resolved() TuningConfig {
 	}
 	if t.ReadTimeoutMs <= 0 {
 		t.ReadTimeoutMs = 200
+	}
+	if t.USBResetAfterFailures <= 0 {
+		t.USBResetAfterFailures = 3
+	}
+	if t.USBResetThrottleSec <= 0 {
+		t.USBResetThrottleSec = 180
 	}
 	return t
 }

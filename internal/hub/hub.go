@@ -153,15 +153,20 @@ func (h *Hub) Start(ctx context.Context) {
 	h.mu.Unlock()
 	h.applyMu.Unlock()
 
-	// 自动检测循环：周期扫描新插入的模块；开关（auto_cards）实时读配置，改动即时生效。
-	// Start 返回前必须等 detectLoop 退出：detectOnce 会读 listSerial/probeFn 等包级注入
+	// 后台循环：自动检测（扫描新插入的模块，开关 auto_cards 实时读配置）+
+	// 设备消失告警（vanish.go）。
+	// Start 返回前必须等两者退出：detectOnce 会读 listSerial/probeFn 等包级注入
 	// 变量，而测试在 Start 返回后（Cleanup）恢复这些变量，不等待即构成数据竞态；
-	// 生产侧则保证停机期间不再有在途扫描写配置。
-	var detectWG sync.WaitGroup
-	detectWG.Add(1)
+	// 生产侧则保证停机期间不再有在途扫描写配置或推送告警。
+	var loopsWG sync.WaitGroup
+	loopsWG.Add(2)
 	go func() {
-		defer detectWG.Done()
+		defer loopsWG.Done()
 		h.detectLoop(ctx)
+	}()
+	go func() {
+		defer loopsWG.Done()
+		h.vanishLoop(ctx)
 	}()
 
 	<-ctx.Done()
@@ -176,7 +181,7 @@ func (h *Hub) Start(ctx context.Context) {
 	for _, c := range all {
 		h.stopCard(c)
 	}
-	detectWG.Wait()
+	loopsWG.Wait()
 	h.lg.Infof("hub", "全部卡片已停止")
 }
 
