@@ -114,6 +114,19 @@ function fmtNational(number) {
   return rest || number;
 }
 
+/** 复制用的号码文本：去掉国家码与所有非数字字符（如 +8613800138000 → 13800138000），
+ *  便于直接粘贴到拨号盘/表单；非 E.164 原样返回（本地号、SIM-xxxx 兜底标识无区号可去）。
+ *  与 fmtNational 的区别：后者为显示用，会按号段插空格。 */
+function fmtCopyNumber(number) {
+  const raw = String(number || "").trim();
+  if (!/^\+\d+$/.test(raw)) return raw;
+  const n = raw.slice(1);
+  for (const [cc] of CC_LIST) {
+    if (n.startsWith(cc)) return n.slice(cc.length).replace(/\D/g, "");
+  }
+  return n.replace(/\D/g, "");
+}
+
 /** 区号下拉候选（中文名 + 区号，供 datalist；label 显示名，value 是区号） */
 const CC_CODE_LIST = CC_LIST;
 
@@ -306,7 +319,7 @@ function smsCardHTML(card) {
     <div class="card-head">
       <span class="flag">${flagSvg(card.number)}</span>
       <span class="card-number" title="${esc(card.number)}">${esc(fmtNational(card.number))}</span>
-      <button class="icon-btn copy-btn" data-act="copy" data-id="${esc(card.id)}" title="复制完整号码 ${esc(card.number)}">${ICON.copy}</button>
+      <button class="icon-btn copy-btn" data-act="copy" data-id="${esc(card.id)}" title="复制号码 ${esc(fmtCopyNumber(card.number))}">${ICON.copy}</button>
       <span class="spacer"></span>
       <button class="icon-btn gear-btn" data-act="cardcfg" data-id="${esc(card.id)}" title="卡片设置">${ICON.gear}</button>
     </div>
@@ -428,9 +441,10 @@ $("#cardGrid").addEventListener("click", (e) => {
   } else if (act === "ping") {
     openPingModal(card);
   } else if (act === "copy") {
-    copyText(card.number)
-      .then(() => toast(`已复制 ${card.number}`, "success"))
-      .catch(() => toast("复制失败，请手动复制：" + card.number, "error"));
+    const num = fmtCopyNumber(card.number);
+    copyText(num)
+      .then(() => toast(`已复制 ${num}`, "success"))
+      .catch(() => toast("复制失败，请手动复制：" + num, "error"));
   }
 });
 
