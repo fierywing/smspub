@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -261,5 +262,64 @@ func TestCEREGURCUpdatesRegistered(t *testing.T) {
 	}
 	if parseCEREGURC("+CEREG: 1") != true || parseCEREGURC("+CEREG: 2") != false {
 		t.Fatal("parseCEREGURC 结果不符")
+	}
+}
+
+// stubUSBReset 替换 usbResetFn：记录调用次数并执行 onReset（模拟复位效果）。
+func stubUSBReset(t *testing.T, onReset func()) *atomic.Int32 {
+	t.Helper()
+	var calls atomic.Int32
+	old := usbResetFn
+	usbResetFn = func(string) error {
+		calls.Add(1)
+		if onReset != nil {
+			onReset()
+		}
+		return nil
+	}
+	t.Cleanup(func() { usbResetFn = old })
+	return &calls
+}
+
+// TestHeartbeatHangResetsOnFirstInitFailure 在线中途心跳失联后，重开串口的首轮
+// 初始化仍无应答即复位，不再等满 usbResetFails 轮。
+func TestHeartbeatHangResetsOnFirstInitFailure(t *testing.T) {
+	m, fm, _ := newTestModem(t, model.CardConfig{})
+	m.usbResetFails = 3
+	var opensAtReset atomic.Int32
+	calls := stubUSBReset(t, func() {
+		opensAtReset.Store(int32(fm.openCount()))
+		fm.hangup.Store(false) // 复位救回模块
+	})
+	runModem(t, m)
+	waitOnline(t, m)
+
+	fm.hangup.Store(true) // 模块整体静默
+	waitFor(t, 5*time.Second, func() bool { return calls.Load() == 1 })
+	// 首次上线 1 次 + 失联后重开 1 次：首轮初始化失败即复位
+	if n := opensAtReset.Load(); n != 2 {
+		t.Fatalf("复位时 openPort 已调用 %d 次，期望 2（首轮重开失败即复位）", n)
+	}
+	waitOnline(t, m)
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("复位 %d 次，期望 1", n)
+	}
+}
+
+// TestPumpDeathKeepsResetThreshold 读泵死亡（USB 掉线/软重启重枚举）不算"在线中途
+// 静默"：模块刚上电 AT 短暂无应答属正常，仍按失败轮数门槛，不提前复位。
+func TestPumpDeathKeepsResetThreshold(t *testing.T) {
+	m, fm, _ := newTestModem(t, model.CardConfig{})
+	m.usbResetFails = 3
+	calls := stubUSBReset(t, nil)
+	runModem(t, m)
+	waitOnline(t, m)
+
+	fm.readErr.Store(true)
+	waitFor(t, 3*time.Second, func() bool { return fm.openCount() >= 2 }) // 已重开
+	fm.readErr.Store(false)
+	waitOnline(t, m)
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("读泵死亡后首轮即复位了 %d 次", n)
 	}
 }

@@ -23,8 +23,12 @@ type Logf func(level, format string, args ...any)
 const (
 	defaultReadBuf = 4096             // 读泵单次读取缓冲
 	defaultCmdTTL  = 10 * time.Second // timeout <= 0 时的兜底超时
-	cmtPrefix      = "+CMT:"
-	ctrlZ          = "\x1a"
+	// maxHBTimeout 心跳 "AT" 单次超时上限。健康模块毫秒级应答，等满整个心跳周期
+	//（默认 30s）只会把失联判定拖长：2 次失败 ≈ 90s 才动手。取 10s 留足模块搜网等
+	// 忙时的应答余量。
+	maxHBTimeout = 10 * time.Second
+	cmtPrefix    = "+CMT:"
+	ctrlZ        = "\x1a"
 )
 
 // pendingCmd 一条在途命令的共享状态。
@@ -467,7 +471,8 @@ func (c *Client) getURC() func(string) {
 	return c.urcFn
 }
 
-// SetHeartbeat 启动心跳：每 interval 通过 Command 发送一次 "AT"（单次超时同 interval），
+// SetHeartbeat 启动心跳：每 interval 通过 Command 发送一次 "AT"（单次超时取 interval
+// 与 maxHBTimeout 的较小者），
 // 连续 failures 次失败调用 onDead（恰好一次，直到 Recover 重置）。
 // 可重复调用更新参数并重置计数；interval<=0 视为 1s，failures<1 视为 1。
 func (c *Client) SetHeartbeat(interval time.Duration, failures int, onDead func()) {
@@ -510,7 +515,7 @@ func (c *Client) heartbeatLoop() {
 		if dead { // 已判定失联，等 Recover
 			continue
 		}
-		if _, err := c.Command("AT", hb.interval); err != nil {
+		if _, err := c.Command("AT", min(hb.interval, maxHBTimeout)); err != nil {
 			if c.isClosed() { // Close 后不再计数、不再触发 onDead
 				return
 			}

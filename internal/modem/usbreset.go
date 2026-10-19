@@ -129,10 +129,18 @@ func (m *Modem) usbResetPolicy() (afterFailures int, throttle time.Duration) {
 // lastUSBReset 无并发访问。设备已不在总线上时静默跳过——那是复位救不了的
 // 形态（设备节点都不存在），人工提醒由 hub 的设备消失告警负责，这里不推送。
 func (m *Modem) maybeUSBReset() {
-	afterFailures, throttle := m.usbResetPolicy()
+	afterFailures, _ := m.usbResetPolicy()
 	if m.backoffAttempt()+1 < afterFailures {
 		return
 	}
+	m.tryUSBReset()
+}
+
+// tryUSBReset 跳过失败轮数门槛、仅受节流约束地执行复位。用于"在线中途静默"：
+// 模块此前初始化成功、心跳突然全部超时，这类卡死重开串口从未救回过（实测十余次
+// 全靠复位恢复），再陪跑剩余轮次只会把每次停机拉长约 1.5 分钟。
+func (m *Modem) tryUSBReset() {
+	_, throttle := m.usbResetPolicy()
 	if !m.lastUSBReset.IsZero() && time.Since(m.lastUSBReset) < throttle {
 		return
 	}

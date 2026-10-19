@@ -228,7 +228,7 @@ func (s *Store) Set(cfg model.Config) error // 校验 + 原子落盘（写临时
 - 默认值（文件不存在时创建）：Listen `:8080`、PingTarget `8.8.8.8`、Baud 115200、AutoCards true。
 - `auto_cards` 字段缺省视为 true：Load 时对旧配置文件（无该字段）归一化为 true，显式 `false` 保留。
 - 校验：Load（磁盘读入）与 Set（API 提交）共用同一套 validate()——Listen 非空、每张卡 Device 非空、卡片 ID 非空且仅允许 `[a-zA-Z0-9_-]` 且全局唯一、串口设备在卡片间唯一；不合法返回 error 不落盘/不启动。
-- `tuning` 段（可整体省略，0 值 = 契约默认，负值归一化为 0）：`heartbeat_interval_sec`(30)、`heartbeat_failures`(3)、`poll_interval_sec`(20)、`reconnect_base_ms`(5000)、`reconnect_max_ms`(60000)、`jitter_ms`(2000)、`detect_interval_sec`(30)、`read_timeout_ms`(200)、`usb_reset_after_failures`(3)、`usb_reset_throttle_sec`(180)。后两项控制模块卡死自愈：连续初始化失败多少轮触发 USB 复位、以及同模块两次复位的最小间隔。
+- `tuning` 段（可整体省略，0 值 = 契约默认，负值归一化为 0）：`heartbeat_interval_sec`(30)、`heartbeat_failures`(3)、`poll_interval_sec`(20)、`reconnect_base_ms`(5000)、`reconnect_max_ms`(60000)、`jitter_ms`(2000)、`detect_interval_sec`(30)、`read_timeout_ms`(200)、`usb_reset_after_failures`(3)、`usb_reset_throttle_sec`(180)。后两项控制模块卡死自愈：连续初始化失败多少轮触发 USB 复位、以及同模块两次复位的最小间隔。例外：模块在线中途心跳判失联后，重开串口的首轮初始化即失败直接复位（仅受节流约束）——这种"在线静默"重开串口实测从未救回；读泵死亡（USB 掉线/软重启重枚举）不在此列。心跳 "AT" 单次超时取 min(心跳周期, 10s)。
 - 测试：默认值、round-trip、原子写、校验失败、auto_cards 缺省/显式值。
 
 ## internal/logger —— 环形缓冲日志

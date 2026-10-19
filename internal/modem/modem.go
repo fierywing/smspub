@@ -82,6 +82,9 @@ type Modem struct {
 	// lastUSBReset 最近一次 USB 自愈复位时刻（usbreset.go 的 maybeUSBReset）。
 	// 仅 Run goroutine 读写，不与其他 goroutine 并发，普通字段即可。
 	lastUSBReset time.Time
+	// hungAfterOnline 上一个连接因心跳失联而断开，且此后尚未重新初始化成功：
+	// 此时初始化失败即判定模块卡死，直接复位（见 tryUSBReset）。仅 Run 读写。
+	hungAfterOnline bool
 
 	// —— 以下参数带契约默认值，仅供测试覆盖 ——
 	openPort       func(device string, baud int) (at.Port, error)
@@ -193,6 +196,9 @@ type conn struct {
 	cli  *at.Client
 	urc  chan string   // URC 队列：读泵回调只入队，由 urcLoop 转移处理
 	done chan struct{} // 关闭后 urcLoop/pollLoop 退出
+	// hbDead 本连接由心跳判定失联（区别于读泵死亡：后者多为 USB 掉线/软重启
+	// 引发的重枚举，模块刚上电时 AT 短暂无应答属正常，不应据此立即复位）。
+	hbDead atomic.Bool
 }
 
 // close 停用本连接：摘除客户端、关闭串口、通知辅助 goroutine 退出。
@@ -259,7 +265,12 @@ func (m *Modem) Run(ctx context.Context) {
 			}
 			m.logf("error", "初始化失败: %v", err)
 			// 口能 open 但 AT 无应答：固件卡死的典型形态，复位可救。
-			m.maybeUSBReset()
+			// 在线中途静默后的首轮即复位；冷启动等其余场景按失败轮数门槛。
+			if m.hungAfterOnline {
+				m.tryUSBReset()
+			} else {
+				m.maybeUSBReset()
+			}
 			if !sleepCtx(ctx, backoffDelay(m.reconnectDelay, m.reconnectMax, m.jitter, m.backoffAttempt())) {
 				return
 			}
@@ -267,6 +278,7 @@ func (m *Modem) Run(ctx context.Context) {
 			continue
 		}
 		m.backoffReset() // 连接成功，后续失联重建从退避基数重新开始
+		m.hungAfterOnline = false
 
 		// 初始化成功：登记客户端、上线、启动心跳与状态轮询
 		m.mu.Lock()
@@ -279,6 +291,7 @@ func (m *Modem) Run(ctx context.Context) {
 		c.cli.Recover()
 		// 心跳相位错峰：在周期上加 [0, jitter) 随机偏移，多卡不再同秒齐发 AT
 		c.cli.SetHeartbeat(m.hbInterval+m.phaseOffset(), m.hbFailures, func() {
+			c.hbDead.Store(true)
 			m.setOnline(false)
 			m.logf("warn", "心跳失联，准备重建连接")
 			select {
@@ -322,6 +335,7 @@ func (m *Modem) Run(ctx context.Context) {
 			c.close(m)
 			// 心跳失联/读泵死亡重建：从退避基数重新开始
 			m.backoffReset()
+			m.hungAfterOnline = c.hbDead.Load()
 			if !sleepCtx(ctx, backoffDelay(m.reconnectDelay, m.reconnectMax, m.jitter, 0)) {
 				return
 			}
