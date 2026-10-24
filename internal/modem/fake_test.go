@@ -115,6 +115,7 @@ type fakeCfg struct {
 	cmglPdu    []string       // AT+CMGL=4 应答的 PDU 列表(模拟离线期积压短信)
 	cmglErr    bool           // AT+CMGL=4 返回 ERROR(模块不支持)
 	cmgrByIdx  map[int]string // AT+CMGR=<idx> 按索引应答的 PDU
+	callFn     func(p *fakePort, cmd string)
 }
 
 // defaultPingReply 默认 QPING 应答：两行成功 reply + 一行汇总（应被解析器跳过）。
@@ -265,48 +266,48 @@ func (fm *fakeModem) dispatch(p *fakePort, ev string) {
 		reply = "\r\nOK\r\n"
 	case strings.HasPrefix(cmd, "AT+QPING="), strings.HasPrefix(cmd, "AT^PING="), strings.HasPrefix(cmd, "AT+MPING="):
 		pingCmd = cmd
-		case strings.HasPrefix(cmd, "AT+CMGR="):
-			// 优先按索引应答(模拟积压短信散落在不同槽位);否则用统一 PDU
-			idx := 0
-			for i := len(cmd) - 1; i >= 0; i-- {
-				if cmd[i] < '0' || cmd[i] > '9' {
-					if n, err := strconv.Atoi(strings.TrimSpace(cmd[i+1:])); err == nil {
-						idx = n
-					}
-					break
+	case strings.HasPrefix(cmd, "AT+CMGR="):
+		// 优先按索引应答(模拟积压短信散落在不同槽位);否则用统一 PDU
+		idx := 0
+		for i := len(cmd) - 1; i >= 0; i-- {
+			if cmd[i] < '0' || cmd[i] > '9' {
+				if n, err := strconv.Atoi(strings.TrimSpace(cmd[i+1:])); err == nil {
+					idx = n
 				}
-			}
-			if cfg.cmgrByIdx != nil {
-				if hex, ok := cfg.cmgrByIdx[idx]; ok {
-					reply = "\r\n+CMGR: 0,\"\",24\r\n" + hex + "\r\n\r\nOK\r\n"
-					break
-				}
-				reply = "\r\nOK\r\n" // 空槽位:无 +CMGR 行
 				break
 			}
-			// 积压场景:索引落在 cmglPdu 范围内则取对应 PDU
-			if idx >= 1 && idx <= len(cfg.cmglPdu) {
-				reply = "\r\n+CMGR: 0,\"\",24\r\n" + cfg.cmglPdu[idx-1] + "\r\n\r\nOK\r\n"
+		}
+		if cfg.cmgrByIdx != nil {
+			if hex, ok := cfg.cmgrByIdx[idx]; ok {
+				reply = "\r\n+CMGR: 0,\"\",24\r\n" + hex + "\r\n\r\nOK\r\n"
 				break
 			}
-			reply = "\r\n+CMGR: 0,\"\",24\r\n" + cfg.cmgrPdu + "\r\n\r\nOK\r\n"
-		case cmd == "AT+CMGL=4":
-			if cfg.cmglErr {
-				reply = "\r\nERROR\r\n"
-				break
-			}
-			if len(cfg.cmglPdu) == 0 {
-				reply = "\r\nOK\r\n"
-				break
-			}
-			body := ""
-			for i, hex := range cfg.cmglPdu {
-				body += "\r\n+CMGL: " + strconv.Itoa(i+1) + ",1,," +
-					strconv.Itoa(len(hex)/2) + "\r\n" + hex
-			}
-			reply = body + "\r\n\r\nOK\r\n"
-		case strings.HasPrefix(cmd, "AT+CMGD="):
+			reply = "\r\nOK\r\n" // 空槽位:无 +CMGR 行
+			break
+		}
+		// 积压场景:索引落在 cmglPdu 范围内则取对应 PDU
+		if idx >= 1 && idx <= len(cfg.cmglPdu) {
+			reply = "\r\n+CMGR: 0,\"\",24\r\n" + cfg.cmglPdu[idx-1] + "\r\n\r\nOK\r\n"
+			break
+		}
+		reply = "\r\n+CMGR: 0,\"\",24\r\n" + cfg.cmgrPdu + "\r\n\r\nOK\r\n"
+	case cmd == "AT+CMGL=4":
+		if cfg.cmglErr {
+			reply = "\r\nERROR\r\n"
+			break
+		}
+		if len(cfg.cmglPdu) == 0 {
 			reply = "\r\nOK\r\n"
+			break
+		}
+		body := ""
+		for i, hex := range cfg.cmglPdu {
+			body += "\r\n+CMGL: " + strconv.Itoa(i+1) + ",1,," +
+				strconv.Itoa(len(hex)/2) + "\r\n" + hex
+		}
+		reply = body + "\r\n\r\nOK\r\n"
+	case strings.HasPrefix(cmd, "AT+CMGD="):
+		reply = "\r\nOK\r\n"
 	case strings.HasPrefix(cmd, "AT+CMGS="):
 		reply = "\r\n> "
 	case isData: // CMGS 数据段（以 0x1A 结尾）
@@ -323,6 +324,10 @@ func (fm *fakeModem) dispatch(p *fakePort, ev string) {
 		reply = "\r\nOK\r\n"
 	}
 	fm.mu.Unlock()
+	if cfg.callFn != nil && (cmd == "AT+CLCC" || cmd == "AT+CLIP=1" || strings.HasPrefix(cmd, "ATD") || cmd == "ATA" || cmd == "ATH" || cmd == "AT+CHUP") {
+		cfg.callFn(p, cmd)
+		return
+	}
 
 	switch {
 	case pingCmd != "":

@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "scope": "read_only_preconditions",
+  "model": "ML307A",
+  "firmware": "ML307A-DSLN-MTSH1S00",
+  "simReady": true,
+  "servingPlmn": "46011",
+  "mncLengthReadFromEFAD": 2,
+  "contexts": [
+    {
+      "cid": 1,
+      "pdpType": "IPV4V6",
+      "apn": "ctnet"
+    },
+    {
+      "cid": 8,
+      "pdpType": "IPV4V6",
+      "apn": "IMS"
+    }
+  ],
+  "imsContexts": [
+    {
+      "cid": 8,
+      "contextReturned": true,
+      "primaryAdvertised": true,
+      "secondaryAdvertised": true
+    }
+  ],
+  "dialupCapability": [
+    "+MDIALUP: (1-15),(0,1)"
+  ],
+  "dataCapability": [
+    "+CGDATA: (\"PPP\"), (1-15)"
+  ],
+  "checks": [
+    {
+      "query": "ATI",
+      "accepted": true
+    },
+    {
+      "query": "AT+CGMR",
+      "accepted": true
+    },
+    {
+      "query": "AT+CPIN?",
+      "accepted": true
+    },
+    {
+      "query": "AT+COPS?",
+      "accepted": true
+    },
+    {
+      "query": "AT+CSIM=?",
+      "accepted": true
+    },
+    {
+      "query": "AT+CCHO=?",
+      "accepted": true
+    },
+    {
+      "query": "AT+CGLA=?",
+      "accepted": true
+    },
+    {
+      "query": "AT+CRSM=176,28589,0,0,4",
+      "accepted": true
+    },
+    {
+      "query": "AT+CGDCONT?",
+      "accepted": true
+    },
+    {
+      "query": "AT+CGCONTRDP=?",
+      "accepted": true
+    },
+    {
+      "query": "AT+CGCONTRDP=8",
+      "accepted": true
+    },
+    {
+      "query": "AT+MDIALUP=?",
+      "accepted": true
+    },
+    {
+      "query": "AT+CGDATA=?",
+      "accepted": true
+    }
+  ],
+  "notTested": [
+    "sim_aka_exchange",
+    "host_ims_data_path",
+    "operator_acceptance",
+    "ims_registration",
+    "incoming_call",
+    "outgoing_call",
+    "bidirectional_media"
+  ]
+}

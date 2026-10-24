@@ -18,7 +18,8 @@ func sampleConfig() model.Config {
 		PingTarget: "1.1.1.1",
 		Cards: []model.CardConfig{
 			{ID: "c1", Device: "/dev/ttyUSB0", Baud: 115200, Number: "+8613800138000",
-				Label: "卡1", Admin: "+8613900139000", Blacklist: []string{"10086", "+8610000"}},
+				Label: "卡1", Admin: "+8613900139000", Blacklist: []string{"10086", "+8610000"},
+				StoreSMS: true},
 			{ID: "c2", Device: "/dev/ttyUSB1"},
 		},
 		Channels: []model.Channel{

@@ -98,24 +98,44 @@ func PortGroupKey(path string) string {
 	return path
 }
 
-// DataInterface 判断串口是否为 USB 设备的 CDC-Data 类接口（bInterfaceClass=0x0a，
-// 承载诊断/数据流，不是 AT 命令口）。部分模块（如 ML307A）对该接口 open+write
+// DataInterface 排除 CDC-Data 接口（bInterfaceClass=0x0a），以及 ML307A 的
+// 网络 interface 00/01 与诊断 interface 04；这些接口不能作为 AT 探测候选。
+// 部分模块（如 ML307A）对数据接口 open+write
 // 会触发固件异常，导致整个 USB 设备掉线重枚举，因此自动检测必须整体跳过。
 // 无法解析（非 USB 串口 / sysfs 缺失）时返回 false，交由探测结果判断。
 func DataInterface(path string) bool {
+	return dataInterface(path, "/sys/class/tty")
+}
+
+func dataInterface(path, sysroot string) bool {
 	tty, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return false
 	}
-	dev, err := filepath.EvalSymlinks("/sys/class/tty/" + filepath.Base(tty) + "/device")
+	dev, err := filepath.EvalSymlinks(filepath.Join(sysroot, filepath.Base(tty), "device"))
 	if err != nil {
 		return false
 	}
-	b, err := os.ReadFile(filepath.Join(filepath.Dir(dev), "bInterfaceClass"))
-	if err != nil {
-		return false
+	for dev != "/" && dev != "." {
+		if b, err := os.ReadFile(filepath.Join(dev, "bInterfaceClass")); err == nil {
+			if strings.TrimSpace(string(b)) == "0a" {
+				return true
+			}
+			read := func(p string) string { b, _ := os.ReadFile(p); return strings.TrimSpace(string(b)) }
+			usb := filepath.Dir(dev)
+			if read(filepath.Join(usb, "idVendor")) == "2ecc" && read(filepath.Join(usb, "idProduct")) == "3012" {
+				// ML307A: 00/01 为网络接口，04 为诊断日志。它们可能都被
+				// option 绑定为 tty，不能发 AT 探测或争抢网页音频的诊断口。
+				switch read(filepath.Join(dev, "bInterfaceNumber")) {
+				case "00", "01", "04":
+					return true
+				}
+			}
+			return false
+		}
+		dev = filepath.Dir(dev)
 	}
-	return strings.TrimSpace(string(b)) == "0a"
+	return false
 }
 
 // globSorted 返回目录下按链接名排序的匹配项；目录不存在时返回空。

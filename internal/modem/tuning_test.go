@@ -229,6 +229,24 @@ func TestDrainStoredOnStartup(t *testing.T) {
 	waitFor(t, 5*time.Second, func() bool { return fm.hasCmd("AT+CMGD=1") && fm.hasCmd("AT+CMGD=2") })
 }
 
+// TestStoreSMSRecoversBacklog StoreSMS 卡上线时用 2,1 模式并补收离线期间积压的短信。
+func TestStoreSMSRecoversBacklog(t *testing.T) {
+	stored := []string{"0011000B916407281553F80000AA0AE8329BFD4697D9EC37"}
+	m, fm, rec := newTestModem(t, model.CardConfig{StoreSMS: true})
+	fm.configure(func(c *fakeCfg) { c.cmglPdu = stored })
+	runModem(t, m)
+	waitOnline(t, m)
+	fm.waitCmds(t, "AT+CNMI=2,1,0,0,0") // StoreSMS 用 CMTI 存储通知
+	fm.waitCmds(t, "AT+CMGL=4")        // 上线补收积压
+	waitFor(t, 5*time.Second, func() bool { return rec.count() == 1 })
+	if rec.count() != 1 {
+		t.Fatalf("补收积压短信 %d 条, want 1", rec.count())
+	}
+	if fm.hasCmd("AT+CNMI=2,2,0,0,0") {
+		t.Fatal("StoreSMS 下不应发送 CNMI=2,2")
+	}
+}
+
 // TestDrainStoredFallbackWhenCmglUnsupported CMGL 不支持时回退按索引逐个读。
 func TestDrainStoredFallbackWhenCmglUnsupported(t *testing.T) {
 	m, fm, rec := newTestModem(t, model.CardConfig{})

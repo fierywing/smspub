@@ -29,14 +29,34 @@ type HistMessage struct {
 
 // Card 是 GET /api/cards 返回的单张卡实时状态（非持久化数据）。
 type Card struct {
-	ID     string    `json:"id"`
-	Number string    `json:"number"` // E.164，如 +8613800138000；探测不到时用 "SIM-<id>"
-	Label  string    `json:"label"`
-	Admin  string    `json:"admin,omitempty"`
-	RSSI   int       `json:"rssi"` // AT+CSQ 原始值 0-31（99 表示未知 → 归 0）
-	Online bool      `json:"online"`
-	SMS    []Message `json:"sms"` // 最新在前
+	ID     string      `json:"id"`
+	Number string      `json:"number"` // E.164，如 +8613800138000；探测不到时用 "SIM-<id>"
+	Label  string      `json:"label"`
+	Admin  string      `json:"admin,omitempty"`
+	RSSI   int         `json:"rssi"` // AT+CSQ 原始值 0-31（99 表示未知 → 归 0）
+	Online bool        `json:"online"`
+	SMS    []Message   `json:"sms"` // 最新在前
+	Voice  VoiceStatus `json:"voice"`
 }
+
+// VoiceStatus 是模块通话控制状态；Supported 仅表示固件接受通话查询，不保证 VoLTE 已注册。
+type VoiceStatus struct {
+	Supported bool   `json:"supported"`
+	Calls     []Call `json:"calls"`
+	Error     string `json:"error,omitempty"`
+}
+
+// Call 对应 AT+CLCC 的一条呼叫。保留非语音呼叫，避免把占线误报为空闲。
+type Call struct {
+	ID        int    `json:"id"`
+	Direction string `json:"direction"` // in/out
+	State     string `json:"state"`
+	Number    string `json:"number"`
+	Mode      int    `json:"mode"` // CLCC 原始 bearer/teleservice 值
+}
+
+// IsVoice 按 CLCC 枚举识别当前处于语音阶段的呼叫，不猜测厂商固件的非标准编码。
+func (c Call) IsVoice() bool { return c.Mode == 0 || c.Mode == 3 || c.Mode == 4 || c.Mode == 5 }
 
 // Channel 推送通道。Type 的合法取值（与前端 CHAN_TYPES 一致）：
 // "Bark", "Telegram", "钉钉机器人", "飞书机器人", "Server酱", "PushPlus",
@@ -59,6 +79,11 @@ type CardConfig struct {
 	Label     string   `json:"label,omitempty"`
 	Admin     string   `json:"admin,omitempty"`
 	Blacklist []string `json:"blacklist,omitempty"` // 黑名单号码（E.164 或纯数字，精确匹配）
+	// StoreSMS 为 true 时优先用 AT+CNMI=2,1（存储通知：先落模块存储区，收到 +CMTI
+	// 再读回），设备掉线期间到达的短信会在重连补收时不丢；false（默认）保持
+	// AT+CNMI=2,2 直投（短信随即推给程序，不落存储，掉线期间的会丢）。
+	// 取值需重启卡片重跑初始化序列生效。
+	StoreSMS bool `json:"store_sms,omitempty"`
 }
 
 // Config 是 config.json 的完整内容，也是 GET/POST /api/config 的载体。

@@ -239,6 +239,27 @@ func TestCNMIBothFailContinues(t *testing.T) {
 	fm.waitCmds(t, "AT+CNMI=2,2,0,0,0", "AT+CNMI=2,1,0,0,0")
 }
 
+// TestCNMIStoreSMSPreferred 配置 StoreSMS 时优先 2,1 存储通知，且不再发 2,2。
+func TestCNMIStoreSMSPreferred(t *testing.T) {
+	m, fm, _ := newTestModem(t, model.CardConfig{ID: "c6s", StoreSMS: true})
+	runModem(t, m)
+	waitOnline(t, m)
+	fm.waitCmds(t, "AT+CNMI=2,1,0,0,0") // 首选 2,1 成功
+	time.Sleep(100 * time.Millisecond)
+	if fm.hasCmd("AT+CNMI=2,2,0,0,0") {
+		t.Fatal("StoreSMS 下 2,1 已成功，不应再发 2,2")
+	}
+}
+
+// TestCNMIStoreSMSFallback 配置 StoreSMS 但 2,1 失败时回退 2,2。
+func TestCNMIStoreSMSFallback(t *testing.T) {
+	m, fm, _ := newTestModem(t, model.CardConfig{ID: "c6f", StoreSMS: true})
+	fm.configure(func(c *fakeCfg) { c.cnmi21Err = true })
+	runModem(t, m)
+	waitOnline(t, m)
+	fm.waitCmds(t, "AT+CNMI=2,1,0,0,0", "AT+CNMI=2,2,0,0,0")
+}
+
 func TestOpenPortFailureRetry(t *testing.T) {
 	m, fm, _ := newTestModem(t, model.CardConfig{ID: "c7"})
 	fm.configure(func(c *fakeCfg) { c.openFails = 2 }) // 前两次打开失败
@@ -588,6 +609,23 @@ func TestCMTIReadDelete(t *testing.T) {
 	if on, _, _ := m.Status(); !on {
 		t.Fatal("解析失败不应影响在线状态")
 	}
+}
+
+// TestCMTIStoredSweepRecoversMissedNotification +CMTI 通知丢失时，存储巡检把短信补收。
+func TestCMTIStoredSweepRecoversMissedNotification(t *testing.T) {
+	stored := []string{"0011000B916407281553F80000AA0AE8329BFD4697D9EC37"}
+	m, fm, rec := newTestModem(t, model.CardConfig{ID: "r1s", StoreSMS: true})
+	fm.configure(func(c *fakeCfg) { c.cmglPdu = stored })
+	runModem(t, m)
+	waitOnline(t, m)
+	// 不发 +CMTI：模拟通知丢失。上线 drainStored 会先取走一批，
+	// 之后由周期轮询里的 sweepStored 反复巡检（测试 pollInterval=50ms）。
+	waitFor(t, 5*time.Second, func() bool { return rec.count() >= 1 })
+	if n := rec.count(); n < 1 {
+		t.Fatalf("巡检应补收滞留短信，实际 %d 条", n)
+	}
+	// 巡检会反复发 CMGL，说明路径确实按轮询在跑（而非仅上线一次）
+	fm.waitCmds(t, "AT+CMGL=4")
 }
 
 func TestCMTDirectDecodeFail(t *testing.T) {

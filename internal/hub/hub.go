@@ -49,6 +49,8 @@ type cardModem interface {
 	Exec(ctx context.Context, cmd string) (string, error)
 	Status() (online bool, rssi int, number string)
 	Imei() string
+	VoiceStatus() model.VoiceStatus
+	ControlCall(ctx context.Context, action, number string) (model.VoiceStatus, error)
 }
 
 // card 一张运行中的卡片：模块 + 入站处理 + 生命周期控制。
@@ -259,6 +261,7 @@ func buildCard(st *store.Store, c *card) model.Card {
 		RSSI:   rssi,
 		Online: c.mdOnline(),
 		SMS:    st.Recent(c.cfg.ID, 5),
+		Voice:  c.md.VoiceStatus(),
 	}
 }
 
@@ -335,6 +338,24 @@ func (h *Hub) RestartCard(cardID string) error {
 	return c.md.SoftRestart(h.baseCtx())
 }
 
+// ControlCall 使用卡片生命周期上下文，删卡/停机时中断串口等待。
+func (h *Hub) ControlCall(cardID, action, number string) (model.VoiceStatus, error) {
+	c := h.getCard(cardID)
+	if c == nil {
+		return model.VoiceStatus{}, errCardNotFound
+	}
+	return c.md.ControlCall(h.baseCtx(), action, number)
+}
+
+// CallStatus reads the modem's cached call state without a new serial query.
+func (h *Hub) CallStatus(cardID string) (model.VoiceStatus, error) {
+	c := h.getCard(cardID)
+	if c == nil {
+		return model.VoiceStatus{}, errCardNotFound
+	}
+	return c.md.VoiceStatus(), nil
+}
+
 // ExecAT 向指定卡透传一条 AT 命令，返回中间行（按 \n 拼接）。
 func (h *Hub) ExecAT(cardID, cmd string) (string, error) {
 	if strings.TrimSpace(cmd) == "" {
@@ -404,7 +425,9 @@ func (h *Hub) applyLocked(cfg model.Config) error {
 			continue
 		}
 		switch {
-		case nc.Device != oc.Device || effBaud(nc.Baud) != effBaud(oc.Baud):
+		case nc.Device != oc.Device || effBaud(nc.Baud) != effBaud(oc.Baud) || nc.StoreSMS != oc.StoreSMS:
+			// device/baud/收信模式都只作用于初始化序列：必须在重跑序列后生效，
+			// 故走重启（旧实例停止、新实例重新初始化），不能只热更新 sms 层。
 			restartIDs = append(restartIDs, id)
 		case metaChanged(oc, nc):
 			updates = append(updates, nc)
@@ -423,7 +446,7 @@ func (h *Hub) applyLocked(cfg model.Config) error {
 		h.stopCard(c)
 		h.lg.Infof("hub", "卡片 %s 已删除并停止", c.cfg.ID)
 	}
-	// 重启：串口/波特率变更，先停旧再建新（新的 sms.Handler 随之重建）
+	// 重启：串口/波特率/收信模式变更，先停旧再建新（新的 sms.Handler 随之重建）
 	for _, id := range restartIDs {
 		h.mu.Lock()
 		oldCard := h.cards[id]
@@ -434,7 +457,7 @@ func (h *Hub) applyLocked(cfg model.Config) error {
 		h.mu.Lock()
 		h.cards[id] = c
 		h.mu.Unlock()
-		h.lg.Infof("hub", "卡片 %s 因串口/波特率变更已重启", id)
+		h.lg.Infof("hub", "卡片 %s 因串口/波特率/收信模式变更已重启", id)
 	}
 	// 热更新：不重启模块，仅刷新 sms 层的 label/admin/blacklist/number
 	for _, nc := range updates {

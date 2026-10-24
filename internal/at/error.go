@@ -21,7 +21,7 @@ const (
 // Error 表示最终结果行携带的错误：+CME ERROR / +CMS ERROR；
 // 普通 "ERROR" 行也归一为本类型（Kind="ERROR"），以满足"最终结果非 OK 返回 *Error"。
 type Error struct {
-	Kind string // "CME" | "CMS" | "ERROR"
+	Kind string // "CME" | "CMS" | "ERROR" | "CALL"
 	Code int    // 数字错误码；verbose 文本时为 0
 	Msg  string // verbose 文本（CMEE=2）或十进制数字字符串
 }
@@ -29,6 +29,8 @@ type Error struct {
 // Error 实现 error 接口。
 func (e *Error) Error() string {
 	switch e.Kind {
+	case "CALL":
+		return e.Msg
 	case "CME", "CMS":
 		if e.Msg != "" {
 			return "+" + e.Kind + " ERROR: " + e.Msg
@@ -37,6 +39,24 @@ func (e *Error) Error() string {
 	default:
 		return "AT ERROR"
 	}
+}
+
+func isCallCommand(cmd string) bool {
+	cmd = strings.ToUpper(strings.TrimSpace(cmd))
+	return strings.HasPrefix(cmd, "ATD") || cmd == "ATA" || cmd == "ATH" || cmd == "AT+CHUP"
+}
+
+func isCallResult(line string) bool {
+	switch line {
+	case "NO CARRIER", "NO ANSWER", "BUSY", "NO DIALTONE", "NO DIAL TONE", "NO DAILTONE":
+		return true
+	}
+	return false
+}
+
+func isCallURC(line string) bool {
+	return isCallResult(line) || line == "RING" || strings.HasPrefix(line, "+CRING:") ||
+		strings.HasPrefix(line, "+CLIP:") || strings.HasPrefix(line, "+CIEV:") || strings.HasPrefix(line, "CIEV:")
 }
 
 // 接口合规性静态断言。
