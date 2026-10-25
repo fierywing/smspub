@@ -249,6 +249,12 @@ class HttpAPI {
       method: "POST", headers: { "Content-Type": "application/json" },
     }, 90000));
   }
+  async call(cardId, action, to = "") {
+    return this._unwrap(await fetchT(`${this.base}/cards/${encodeURIComponent(cardId)}/call`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, to }),
+    }, 50000));
+  }
   async restart(cardId) {
     return this._unwrap(await fetchT(`${this.base}/cards/${cardId}/restart`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -328,10 +334,11 @@ function smsCardHTML(card) {
       <span class="card-label">${esc(card.label || "")}</span>
     </div>
     <div class="card-actions">
-      <button class="act-btn disabled" title="未来实现">${ICON.phone}<span>电话</span></button>
+      <button class="act-btn" data-act="call" data-id="${esc(card.id)}">${ICON.phone}<span>电话</span></button>
       <button class="act-btn" data-act="sms" data-id="${esc(card.id)}">${ICON.chat}<span>短信</span></button>
       <button class="act-btn" data-act="ping" data-id="${esc(card.id)}">${ICON.ping}<span>Ping</span></button>
     </div>
+    <div class="call-summary" aria-live="polite">${esc(callSummary(card))}</div>
     <div class="sms-box ${card.expanded ? "expanded" : ""}" data-act="toggle" data-id="${esc(card.id)}">
       <div class="sms-preview">
         <div class="sms-preview-text">${latest ? esc(latest.text) : "尚未收到短信"}</div>
@@ -364,6 +371,7 @@ async function renderAll() {
   cardsData = fresh.map((c) => ({ ...c, expanded: prev.get(c.id) || false }));
   $("#cardGrid").innerHTML = cardsData.map(smsCardHTML).join("");
   $("#emptyHint").hidden = cardsData.length > 0;
+  updateCallModal();
 }
 
 /** 轮询合并：已有卡就地更新（保留展开态与对象引用），卡片增删才整格重绘 */
@@ -375,6 +383,7 @@ function mergeCards(fresh) {
     cardsData = fresh.map((f) => ({ ...f, expanded: prev.get(f.id) || false }));
     $("#cardGrid").innerHTML = cardsData.map(smsCardHTML).join("");
     $("#emptyHint").hidden = cardsData.length > 0;
+    updateCallModal();
     return;
   }
   for (const f of fresh) {
@@ -383,6 +392,7 @@ function mergeCards(fresh) {
     Object.assign(old, f);
     patchCard(old);
   }
+  updateCallModal();
 }
 
 /** 局部更新单张卡片（不重建网格，保留展开态/滚动位置） */
@@ -391,22 +401,34 @@ function patchCard(card) {
   if (!root) return;
   const latest = card.sms.find((s) => s.dir === "in") || card.sms[0];
   if (latest) {
-    root.querySelector(".sms-preview-text").textContent = latest.text;
-    root.querySelector(".from-text").textContent =
-      latest.dir === "out" ? `发给 ${latest.to || ""}` : latest.from || "";
+    setTextIfChanged(root.querySelector(".sms-preview-text"), latest.text);
+    setTextIfChanged(root.querySelector(".from-text"),
+      latest.dir === "out" ? `发给 ${latest.to || ""}` : latest.from || "");
     const timeEl = root.querySelector(".sms-preview-time");
     timeEl.dataset.ts = latest.ts;
-    timeEl.textContent = fmtCardTime(latest.ts);
+    setTextIfChanged(timeEl, fmtCardTime(latest.ts));
     timeEl.classList.toggle("fresh", !!fmtRelative(latest.ts));
   }
   const sig = root.querySelector(".signal");
   sig.className = `signal ${signalClass(card.rssi)}`;
   sig.title = signalTitle(card.rssi);
   root.classList.toggle("offline", !card.online);
+  setTextIfChanged(root.querySelector(".call-summary"), callSummary(card));
+  root.querySelector('[data-act="call"]').classList.toggle("call-ringing", (card.voice?.calls || []).some(c => c.state === "incoming"));
   const panel = root.querySelector(".history-panel");
-  const keep = panel.scrollTop;
-  panel.innerHTML = histListHTML(card);
-  panel.scrollTop = keep;
+  // 浏览器会规范化 HTML（例如文本中的引号实体），比较规范化后的内容，
+  // 避免每次轮询都替换相同的文本节点、清空用户的选择。
+  const template = document.createElement("template");
+  template.innerHTML = histListHTML(card);
+  if (panel.innerHTML !== template.innerHTML) {
+    const keep = panel.scrollTop;
+    panel.replaceChildren(template.content);
+    panel.scrollTop = keep;
+  }
+}
+
+function setTextIfChanged(el, text) {
+  if (el.textContent !== text) el.textContent = text;
 }
 
 /* 每秒刷新所有卡片右下角时间（秒级精度） */
@@ -436,6 +458,8 @@ $("#cardGrid").addEventListener("click", (e) => {
     actEl.classList.toggle("expanded", card.expanded);
   } else if (act === "sms") {
     openSmsModal(card);
+  } else if (act === "call") {
+    openCallModal(card);
   } else if (act === "cardcfg") {
     openCardCfg(card);
   } else if (act === "ping") {
@@ -447,6 +471,262 @@ $("#cardGrid").addEventListener("click", (e) => {
       .catch(() => toast("复制失败，请手动复制：" + num, "error"));
   }
 });
+
+/* ================= 拨号与通话 ================= */
+const CALL_STATES = { active: "通话中", held: "保持中", dialing: "正在拨号", alerting: "等待对方接听", incoming: "来电", waiting: "呼叫等待" };
+const isVoiceCall = c => [0, 3, 4, 5].includes(c.mode ?? 0);
+let callCardId = null, callBusy = false, callCapabilitySeq = 0;
+let callAudioCap = null, audioCallSeen = false, dockCardId = null;
+let audioMissingSince = 0, audioMissingCard = null;
+let ringAudio = null, ringInterval = null;
+const connectedSince = new Map();
+const callAudio = new window.CallAudio(({message, state}) => {
+  $("#callAudioStatus").textContent = message;
+  $("#callAudioStatus").dataset.state = state;
+  if (state === "prepared") updateCallModal();
+  updateSpeaker();
+});
+function callSummary(card) {
+  if (!card.online) return "电话：卡片离线";
+  if (!card.voice?.supported) return "电话：固件通话控制不可用";
+  if (card.voice.error) return "电话：状态查询失败，请打开电话查看";
+  const calls = card.voice.calls || [];
+  return calls.length ? calls.map(c => `${isVoiceCall(c) ? "" : "非语音呼叫 · "}${CALL_STATES[c.state] || c.state} · ${c.number || "未知号码"}`).join("；") : "电话：空闲";
+}
+function callDuration(id) {
+  const seconds = connectedSince.has(id) ? Math.max(0, Math.floor((Date.now() - connectedSince.get(id)) / 1000)) : 0;
+  return `${String(Math.floor(seconds / 60)).padStart(2,"0")}:${String(seconds % 60).padStart(2,"0")}`;
+}
+function updateSpeaker() {
+  const active = callAudio.running && callAudio.cardId === callCardId;
+  $("#callSpeakerBtn").textContent = active ? "暂停收听" : "开启收听";
+  $("#callSpeakerBtn").setAttribute("aria-pressed", String(active));
+  $("#callSpeakerBtn").disabled = !!api.demo || callAudioCap?.receive === false;
+  const mic = $("#callMicBtn");
+  const reason = api.demo ? "演示页面不使用麦克风" :
+    !window.isSecureContext ? "请通过 HTTPS 或 localhost 打开网页后使用麦克风" :
+    !navigator.mediaDevices?.getUserMedia ? "当前浏览器无法使用麦克风，请换用支持麦克风的浏览器" :
+    !callAudioCap ? "正在检查当前卡的麦克风支持…" :
+    callAudioCap.reason === "卡片离线" ? "卡片离线，请等待重新连接" :
+    callAudioCap.microphone !== true ? "当前卡的固件尚不支持网页麦克风" : "";
+  mic.disabled = !!reason || !!callAudio.microphonePending;
+  mic.title = reason || (callAudio.preparedMedia ? "麦克风已就绪，电话接通后开始发送声音" : "允许浏览器使用麦克风；电话接通后开始发送声音");
+  mic.textContent = callAudio.microphonePending ? (callAudio.media ? "正在连接麦克风…" : "等待麦克风权限…") : callAudio.microphoneEnabled ? (callAudio.muted ? "取消静音" : "麦克风静音") : callAudio.preparedMedia ? "关闭麦克风" : "开启麦克风";
+  mic.setAttribute("aria-pressed", String(!!callAudio.preparedMedia || (!!callAudio.microphoneEnabled && !callAudio.muted)));
+  const reasonText = $("#callMicReason");
+  reasonText.hidden = !reason; reasonText.textContent = reason;
+
+}
+async function loadCallCapability() {
+  const id = callCardId, seq = ++callCapabilitySeq;
+  callAudioCap = null;
+  $("#callCapability").textContent = api.demo ? "演示界面不拨打真实电话。" : "正在检查网页音频…";
+  if (api.demo) return;
+  try {
+    const response = await fetchT(`/api/cards/${encodeURIComponent(id)}/audio/status`, {}, 8000);
+    if (!response.ok) throw new Error("音频状态暂时不可用");
+    const capability = await response.json();
+    if (seq !== callCapabilitySeq || callCardId !== id) return;
+    callAudioCap = capability;
+    $("#callCapability").textContent = capability.microphone
+      ? !window.isSecureContext ? "麦克风需通过 HTTPS 或 localhost 打开网页；当前页面仍可拨号和收听。"
+      : "可使用电脑麦克风和扬声器通话。首次使用请允许麦克风权限；建议佩戴耳机。"
+      : capability.receive ? "可收听对方声音；当前卡尚不支持网页麦克风。"
+      : `${capability.reason || "当前卡暂不支持网页音频"}。`;
+  } catch (error) {
+    if (seq !== callCapabilitySeq) return;
+    $("#callCapability").textContent = `${error.message}；仍可操作拨号和挂断。`;
+  }
+  updateSpeaker();
+}
+function openCallModal(card) {
+  if (!card) { toast("请先插入电话模组", "info"); return; }
+  if (callBusy && callCardId !== card.id) { toast("电话操作处理中，请稍候", "info"); return; }
+  if (callCardId !== card.id) {
+    callAudio.stop(); audioCallSeen = false;
+    $("#callTo").value = "";
+  }
+  callCardId = card.id;
+  updateCallModal();
+  showModal("callModal");
+  loadCallCapability();
+}
+function updateCallDock() {
+  for (const card of cardsData) {
+    if ((card.voice?.calls || []).some(c => c.state === "active")) {
+      if (!connectedSince.has(card.id)) connectedSince.set(card.id, Date.now());
+    } else if (!card.voice?.error && !(card.voice?.calls || []).some(c => c.state === "held")) connectedSince.delete(card.id);
+  }
+  for (const id of connectedSince.keys()) if (!cardsData.some(c => c.id === id)) connectedSince.delete(id);
+  const busy = cardsData.filter(c => (c.voice?.calls || []).length);
+  const ringing = busy.find(c => (c.voice.calls || []).some(x => x.state === "incoming"));
+  const card = ringing || busy.find(c => c.id === callCardId) || busy[0];
+  dockCardId = card?.id || null;
+  const incoming = card?.voice.calls.find(c => c.state === "incoming");
+  const call = incoming || card?.voice.calls[0];
+  const modalVisible = !$("#callModal").hidden;
+  $("#callDock").hidden = !card || (modalVisible && card.id === callCardId && busy.length === 1);
+  if (card) {
+    $("#callDockPeer").textContent = `${call.number || "未知号码"} · ${card.label || card.number}`;
+    $("#callDockStatus").textContent = !card.online ? "设备离线，请核对通话状态" : `${CALL_STATES[call.state] || call.state}${call.state === "active" ? " · " + callDuration(card.id) : ""}${busy.length > 1 ? ` · ${busy.length} 张卡有通话` : ""}`;
+    $("#callDock").classList.toggle("incoming", !!incoming);
+    $("#callDockAnswer").hidden = !incoming || card.voice.calls.length !== 1 || !isVoiceCall(incoming);
+    $("#callDockAnswer").disabled = callBusy || !card.online;
+    $("#callDockHangup").disabled = callBusy || !card.online;
+    $("#callDockHangup").textContent = incoming ? "拒接" : "挂断";
+  }
+  if (ringing && ringAudio?.state === "running") {
+    if (!ringInterval) { ringPulse(); ringInterval = setInterval(ringPulse, 3000); }
+  } else { clearInterval(ringInterval); ringInterval = null; }
+}
+function updateCallModal() {
+  updateCallDock();
+  if (!callCardId) return;
+  const card = cardsData.find(c => c.id === callCardId);
+  if (card?.online && callAudioCap?.reason === "卡片离线") loadCallCapability();
+  const select = $("#callCardSelect");
+  const options = cardsData.map(c => `<option value="${esc(c.id)}">${esc(c.label ? c.label + " · " : "")}${esc(c.number)}${c.online ? "" : " · 离线"}</option>`).join("");
+  if (select.innerHTML !== options) select.innerHTML = options;
+  select.value = callCardId; select.disabled = callBusy;
+  const calls = card?.voice?.calls || [];
+  const call = calls.find(c => c.state === "incoming") || calls.find(c => c.state === "active") || calls[0];
+  const incoming = call?.state === "incoming";
+  const active = call?.state === "active";
+  $("#callModalTitle").textContent = incoming ? "来电" : "拨号通话";
+  $("#callPeer").hidden = !call;
+  $("#callPeer").textContent = call?.number || "未知号码";
+  $("#callAvatar").textContent = incoming ? "☎" : active ? "◉" : "☎";
+  $("#callStage").dataset.state = call?.state || "idle";
+  $("#callTimer").hidden = !active;
+  $("#callTimer").textContent = callDuration(callCardId);
+  $("#callStatus").textContent = call ? CALL_STATES[call.state] || call.state :
+    !card ? "卡片已移除" : !card.online ? "卡片离线" : !card.voice?.supported ? "此固件不支持电话" : "使用 SIM 原号码拨打电话";
+  const error = card?.voice?.error || (call && !isVoiceCall(call) ? "当前为非语音呼叫" : "");
+  $("#callError").textContent = error; $("#callError").hidden = !error;
+  const ready = card?.online && card?.voice?.supported && !callBusy && !api.demo;
+  $("#callDialBtn").hidden = calls.length > 0;
+  $("#callDialBtn").disabled = !ready || !!error;
+  $("#callDialBtn").textContent = callBusy ? "正在处理…" : "☎ 拨打电话";
+  $("#callAnswerBtn").hidden = !incoming;
+  $("#callAnswerBtn").disabled = !ready || !!error || calls.length !== 1 || !isVoiceCall(call);
+  $("#callHangupBtn").hidden = !calls.length;
+  $("#callHangupBtn").disabled = !ready;
+  $("#callHangupBtn").textContent = incoming ? "☎ 拒接" : calls.length > 1 ? "☎ 挂断全部" : "☎ 挂断";
+  $("#callTo").disabled = callBusy || !!calls.length;
+  $("#callKeypad").hidden = !!calls.length;
+  $("#callTo").closest("label").hidden = !!calls.length;
+  for (const button of $$("#callKeypad button")) button.disabled = callBusy || !!calls.length;
+  if ((callAudio.running && callAudio.cardId === callCardId) || callAudio.microphoneCard === callCardId) {
+    if (calls.length) audioCallSeen = true;
+    if (!card?.online || (!error && audioCallSeen && !calls.length)) {
+      // A single polling snapshot must not cancel audio recovery. Explicit
+      // hangup and the server's confirmed call-end event still stop immediately.
+      if (!audioMissingSince || audioMissingCard !== callCardId) {
+        audioMissingSince = performance.now(); audioMissingCard = callCardId;
+      }
+      if (performance.now() - audioMissingSince >= 4000) {
+        callAudio.stop(card?.online ? "通话已结束" : "卡片已离线"); audioCallSeen = false;
+      }
+    } else { audioMissingSince = 0; audioMissingCard = null; }
+  } else { audioMissingSince = 0; audioMissingCard = null; }
+  if (active && callAudio.preparedCard === callCardId && callAudio.preparedMedia) {
+    const media = callAudio.preparedMedia;
+    callAudio.preparedMedia = null; callAudio.preparedCard = null;
+    audioCallSeen = true; callAudio.start(callCardId, "stereo", {media});
+  }
+  updateSpeaker();
+}
+async function controlCall(action, id = callCardId) {
+  if (callBusy || !id) return;
+  if (api.demo) { toast("演示页面不会拨打电话", "info"); return; }
+  const to = $("#callTo").value.trim();
+  if (action === "dial" && !/^\+?\d{1,20}$/.test(to)) {
+    toast("请输入 1–20 位数字，可带前导 +", "error"); $("#callTo").focus(); return;
+  }
+  callBusy = true;
+  // 用户点击时解锁浏览器播放；音频失败不会阻止原有电话控制。
+  if (action !== "hangup" && callAudioCap?.receive !== false && !callAudio.running && !callAudio.preparedMedia && callAudio.microphoneCard !== id) {
+    audioCallSeen = false; callAudio.start(id);
+  }
+  if (action !== "hangup" && callAudioCap?.microphone && window.isSecureContext && !callAudio.microphoneEnabled) callAudio.armMicrophone(id);
+  updateCallModal();
+  try {
+    const result = await api.call(id, action, to);
+    ++pollSeq;
+    const card = cardsData.find(c => c.id === id);
+    if (card) { card.voice = result.voice; patchCard(card); }
+    if (action === "hangup" && (callAudio.cardId === id || callAudio.microphoneCard === id)) { callAudio.stop("通话已挂断"); audioCallSeen = false; }
+    toast(action === "dial" ? "正在呼叫，等待对方接听" : action === "answer" ? "已发送接听指令" : "已发送挂断指令", "success");
+  } catch (err) {
+    if (action === "dial" && (callAudio.cardId === id || callAudio.microphoneCard === id)) callAudio.stop("拨号未成功，请核对电话状态");
+    toast(`${err.message}；请核对通话状态`, "error");
+  } finally {
+    callBusy = false; updateCallModal(); await renderAll();
+  }
+}
+function ringPulse() {
+  if (!ringAudio || ringAudio.state !== "running") return;
+  const now = ringAudio.currentTime, gain = ringAudio.createGain();
+  gain.gain.setValueAtTime(.035, now); gain.gain.setTargetAtTime(0, now + .65, .04);
+  gain.connect(ringAudio.destination);
+  for (const frequency of [440, 480]) {
+    const oscillator = ringAudio.createOscillator(); oscillator.frequency.value = frequency;
+    oscillator.connect(gain); oscillator.start(now); oscillator.stop(now + .85);
+    oscillator.onended = () => { oscillator.disconnect(); };
+  }
+  setTimeout(() => gain.disconnect(), 1200);
+}
+$("#callCardSelect").addEventListener("change", e => openCallModal(cardsData.find(c => c.id === e.target.value)));
+$("#callTo").addEventListener("input", updateCallModal);
+$("#callTo").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); if (!$("#callDialBtn").disabled) controlCall("dial"); } });
+$("#callKeypad").addEventListener("click", e => {
+  const button = e.target.closest("[data-digit]"); if (!button || button.disabled) return;
+  const input = $("#callTo"); const digit = button.dataset.digit;
+  if (digit === "backspace") input.value = input.value.slice(0, -1);
+  else if (input.value.length < 21 && (digit !== "+" || !input.value)) input.value += digit;
+  updateCallModal();
+});
+$("#callDialBtn").addEventListener("click", () => controlCall("dial"));
+$("#callAnswerBtn").addEventListener("click", () => controlCall("answer"));
+$("#callHangupBtn").addEventListener("click", () => controlCall("hangup"));
+$("#callDockOpen").addEventListener("click", () => openCallModal(cardsData.find(c => c.id === dockCardId)));
+$("#callDockAnswer").addEventListener("click", () => { const card = cardsData.find(c => c.id === dockCardId); openCallModal(card); controlCall("answer", card?.id); });
+$("#callDockHangup").addEventListener("click", () => controlCall("hangup", dockCardId));
+$("#callSpeakerBtn").addEventListener("click", () => {
+  if (callAudio.running) { callAudio.stop(); return; }
+  audioCallSeen = !!cardsData.find(c => c.id === callCardId)?.voice?.calls?.length;
+  callAudio.start(callCardId);
+});
+$("#callMicBtn").addEventListener("click", () => {
+  if (callAudio.microphoneEnabled) callAudio.toggleMute();
+  else if (callAudio.preparedMedia) callAudio.cancelPreparedMicrophone();
+  else {
+    const calls = cardsData.find(c => c.id === callCardId)?.voice?.calls || [];
+    audioCallSeen = !!calls.length;
+    if (calls.some(c => c.state === "active")) callAudio.enableMicrophone(callCardId);
+    else callAudio.armMicrophone(callCardId);
+  }
+});
+$("#callVolume").addEventListener("input", e => callAudio.setVolume(Number(e.target.value) / 100));
+$("#callRingerBtn").addEventListener("click", async () => {
+  const button = $("#callRingerBtn");
+  if (ringAudio) {
+    ringAudio.close().catch(() => {}); ringAudio = null; clearInterval(ringInterval); ringInterval = null;
+    button.setAttribute("aria-pressed", "false"); button.title = "开启来电提示音"; button.setAttribute("aria-label", button.title);
+  } else {
+    try {
+      const Audio = window.AudioContext || window.webkitAudioContext;
+      ringAudio = new Audio(); await ringAudio.resume();
+      button.setAttribute("aria-pressed", "true"); button.title = "关闭来电提示音"; button.setAttribute("aria-label", button.title);
+      updateCallDock(); toast("来电提示音已开启，请保持此页面打开", "success");
+    } catch { ringAudio = null; toast("浏览器暂时无法播放提示音", "error"); }
+  }
+});
+setInterval(() => {
+  if (callCardId) $("#callTimer").textContent = callDuration(callCardId);
+  updateCallDock();
+}, 1000);
+window.addEventListener("pagehide", () => { callAudio.stop(); clearInterval(ringInterval); ringAudio?.close().catch(() => {}); });
 
 /* ================= 发短信弹窗 ================= */
 let smsCtx = null;
@@ -591,6 +871,13 @@ async function openCardCfg(card) {
     <label class="field wide"><span>号码</span><input id="ccMain" value="${esc(nCode)}" placeholder="${simPending ? "未探测到号码" : "13800138000"}" title="区号后的号码；读不出卡号时填这里，保存会写回卡片"></label>
     <label class="field"><span>管理员号码</span><input id="ccAdmin" value="${esc(c.admin || "")}" placeholder="可远程发短信/重启"></label>
     <label class="field wide"><span>黑名单</span><input id="ccBlacklist" value="${esc((c.blacklist || []).join(", "))}" placeholder="逗号分隔，命中即不转发"></label>
+    <label class="field wide"><span>收信模式</span>
+      <select id="ccStoreSms">
+        <option value="0" ${c.store_sms ? "" : "selected"}>直投（默认，短信随到随推）</option>
+        <option value="1" ${c.store_sms ? "selected" : ""}>存储补收（先存模块，掉线期间不丢）</option>
+      </select>
+      <span class="field-tip">USB/网络不稳的卡选「存储补收」，重连后能补回离线期间到达的短信；保存会重启该卡</span>
+    </label>
     ${c.imei ? `<label class="field wide"><span>模块序列号</span><input value="${esc(c.imei)}" readonly title="模块身份（AT+CGSN 自动学习）；模块换到别的 USB 口时，卡片会按它自动跟随"></label>` : ""}
     ${num && !c.number ? `<div class="field-tip">以上号码来自模块探测（未写入配置）；点保存即可固化，也可以修改</div>` : ""}
   `;
@@ -613,6 +900,7 @@ function collectCardCfg() {
   c.label = $("#ccLabel").value.trim();
   c.admin = $("#ccAdmin").value.trim();
   c.blacklist = $("#ccBlacklist").value.trim() ? $("#ccBlacklist").value.trim().split(/[,，]/).map((s) => s.trim()).filter(Boolean) : [];
+  c.store_sms = $("#ccStoreSms").value === "1";
   if (m.number) c.number = m.number; // 两框全空 = 不改动号码；有值 = 保存用户输入（允许覆盖探测到的号码）
   return c;
 }
@@ -758,13 +1046,20 @@ $$("#settingsModal .tab").forEach((t) =>
 
 /* ================= 弹窗基础 ================= */
 function showModal(id) { $(`#${id}`).hidden = false; }
-function hideModal(id) { $(`#${id}`).hidden = true; }
+function hideModal(id) {
+  $(`#${id}`).hidden = true;
+  if (id === "callModal") {
+    const calls = cardsData.find(c => c.id === callCardId)?.voice?.calls || [];
+    if (!callBusy && !calls.length && callAudio.microphoneCard === callCardId) callAudio.cancelPreparedMicrophone();
+    updateCallDock();
+  }
+}
 $$("[data-close]").forEach((b) => b.addEventListener("click", () => hideModal(b.dataset.close)));
 $$(".modal-backdrop").forEach((bd) => {
-  bd.addEventListener("click", (e) => { if (e.target === bd) bd.hidden = true; });
+  bd.addEventListener("click", (e) => { if (e.target === bd) hideModal(bd.id); });
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") $$(".modal-backdrop").forEach((bd) => (bd.hidden = true));
+  if (e.key === "Escape") $$(".modal-backdrop").forEach((bd) => hideModal(bd.id));
 });
 
 /* ================= 启动 ================= */
@@ -786,5 +1081,5 @@ if (!api.demo) {
     } finally {
       pollBusy = false;
     }
-  }, 4000);
+  }, 1500);
 }

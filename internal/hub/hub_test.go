@@ -266,9 +266,15 @@ func (f *fakeCard) Run(ctx context.Context) {
 	}
 }
 
-// initSeq 脚本化初始化序列：关回显、探活、PDU 模式、CNMI 直投、读信号强度。
+// initSeq 脚本化初始化序列：关回显、探活、PDU 模式、CNMI 收信模式、读信号强度。
 func (f *fakeCard) initSeq(cli *at.Client) error {
-	for _, cmd := range []string{"ATE0", "AT", "AT+CMEE=2", "AT+CMGF=0", "AT+CNMI=2,2,0,0,0"} {
+	f.mu.Lock()
+	cnmi := "AT+CNMI=2,2,0,0,0"
+	if f.cfg.StoreSMS {
+		cnmi = "AT+CNMI=2,1,0,0,0"
+	}
+	f.mu.Unlock()
+	for _, cmd := range []string{"ATE0", "AT", "AT+CMEE=2", "AT+CMGF=0", cnmi} {
 		if _, err := cli.Command(cmd, 2*time.Second); err != nil {
 			return err
 		}
@@ -382,6 +388,14 @@ func (f *fakeCard) Imei() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.imei
+}
+
+func (f *fakeCard) VoiceStatus() model.VoiceStatus {
+	return model.VoiceStatus{Supported: true, Calls: []model.Call{}}
+}
+
+func (f *fakeCard) ControlCall(ctx context.Context, action, number string) (model.VoiceStatus, error) {
+	return f.VoiceStatus(), ctx.Err()
 }
 
 // ---- fakeCard 观测辅助 ----
@@ -780,6 +794,42 @@ func TestApplyConfigLifecycle(t *testing.T) {
 	}
 	if !fc.hasCmd("AT+CNMI=2,2,0,0,0") {
 		t.Error("假模块未走脚本化初始化序列")
+	}
+}
+
+// TestApplyConfigStoreSMSRestart 收信模式（StoreSMS）变更需重启卡片重跑初始化序列。
+func TestApplyConfigStoreSMSRestart(t *testing.T) {
+	h, ff := newTestHub(t, model.Config{Cards: []model.CardConfig{cc("card1", "/dev/ttyFAKE1")}})
+	startHub(t, h)
+	waitOnline(t, h, "card1")
+	if got := ff.last("card1"); got.hasCmd("AT+CNMI=2,1,0,0,0") {
+		t.Fatal("默认（直投）不应发送 CNMI=2,1")
+	}
+
+	// 打开 StoreSMS → 重启该卡，新实例走 2,1
+	before := ff.count()
+	applyOK(t, h, model.Config{Cards: []model.CardConfig{{
+		ID: "card1", Device: "/dev/ttyFAKE1", StoreSMS: true,
+	}}})
+	if ff.count() != before+1 {
+		t.Fatalf("StoreSMS 变更应重启卡片：before=%d after=%d", before, ff.count())
+	}
+	waitOnline(t, h, "card1")
+	if !ff.last("card1").hasCmd("AT+CNMI=2,1,0,0,0") {
+		t.Error("StoreSMS=true 时新实例应使用 CNMI=2,1")
+	}
+
+	// 再关闭 → 再次重启回 2,2
+	before = ff.count()
+	applyOK(t, h, model.Config{Cards: []model.CardConfig{{
+		ID: "card1", Device: "/dev/ttyFAKE1", StoreSMS: false,
+	}}})
+	if ff.count() != before+1 {
+		t.Fatalf("关闭 StoreSMS 也应重启：before=%d after=%d", before, ff.count())
+	}
+	waitOnline(t, h, "card1")
+	if !ff.last("card1").hasCmd("AT+CNMI=2,2,0,0,0") {
+		t.Error("StoreSMS=false 时新实例应使用 CNMI=2,2")
 	}
 }
 

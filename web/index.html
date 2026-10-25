@@ -19,6 +19,7 @@
       <a class="tab" href="./history.html">历史信息</a>
     </nav>
     <div class="topbar-right">
+      <button class="icon-btn" id="callRingerBtn" title="开启来电提示音" aria-label="开启来电提示音" aria-pressed="false">♩</button>
       <button class="icon-btn" id="themeBtn" title="切换明暗主题">
         <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
         <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
@@ -33,6 +34,49 @@
     <div class="card-grid" id="cardGrid"></div>
     <div class="empty-hint" id="emptyHint" hidden>暂无卡片，插入模块后将自动检测添加</div>
   </main>
+
+  <div class="modal-backdrop" id="callModal" hidden>
+    <div class="modal phone-modal" role="dialog" aria-modal="true" aria-labelledby="callModalTitle">
+      <div class="modal-head"><h2 id="callModalTitle">拨号通话</h2><button class="icon-btn close-btn" data-close="callModal" aria-label="最小化电话窗口" title="最小化，通话继续">✕</button></div>
+      <div class="modal-body phone-body">
+        <label class="field phone-line"><span>使用这张 SIM 拨打</span><select id="callCardSelect" aria-label="通话 SIM 卡"></select></label>
+        <div class="phone-stage" id="callStage">
+          <div class="phone-avatar" id="callAvatar" aria-hidden="true">☎</div>
+          <div class="phone-peer" id="callPeer">准备拨号</div>
+          <p id="callStatus" role="status" aria-live="polite">查询通话状态…</p>
+          <div id="callTimer" class="phone-timer">00:00</div>
+        </div>
+        <p id="callError" class="phone-error" role="alert" hidden></p>
+        <label class="field phone-number"><span class="sr-only">拨打号码</span><input id="callTo" type="tel" inputmode="tel" autocomplete="tel" maxlength="21" placeholder="输入电话号码" aria-label="拨打号码"></label>
+        <div class="phone-keypad" id="callKeypad" aria-label="拨号键盘">
+          <button type="button" data-digit="1">1<small> </small></button><button type="button" data-digit="2">2<small>ABC</small></button><button type="button" data-digit="3">3<small>DEF</small></button>
+          <button type="button" data-digit="4">4<small>GHI</small></button><button type="button" data-digit="5">5<small>JKL</small></button><button type="button" data-digit="6">6<small>MNO</small></button>
+          <button type="button" data-digit="7">7<small>PQRS</small></button><button type="button" data-digit="8">8<small>TUV</small></button><button type="button" data-digit="9">9<small>WXYZ</small></button>
+          <button type="button" data-digit="+" aria-label="国际区号加号">+<small>国际区号</small></button><button type="button" data-digit="0">0<small> </small></button><button type="button" data-digit="backspace" aria-label="删除一位">⌫<small>删除</small></button>
+        </div>
+        <div class="phone-controls">
+          <button class="phone-action phone-dial" id="callDialBtn"><span aria-hidden="true">☎</span>拨打电话</button>
+          <button class="phone-action phone-answer" id="callAnswerBtn" hidden><span aria-hidden="true">☎</span>接听</button>
+          <button class="phone-action phone-hangup" id="callHangupBtn" hidden><span aria-hidden="true">☎</span>挂断</button>
+        </div>
+        <div class="phone-audio">
+          <div class="phone-audio-controls">
+            <button class="btn ghost" id="callSpeakerBtn" aria-pressed="false">开启收听</button>
+            <button class="btn ghost" id="callMicBtn" aria-pressed="false" disabled>开启麦克风</button>
+            <label class="phone-volume">音量<input id="callVolume" type="range" min="0" max="100" value="80" aria-label="通话播放音量"></label>
+          </div>
+          <p id="callMicReason" class="phone-note" role="status" hidden></p>
+          <p id="callAudioStatus" role="status">尚未开启收听</p>
+          <p class="phone-note" id="callCapability">正在检查网页音频…</p>
+        </div>
+        <p class="phone-note phone-close-note">关闭窗口可最小化通话；挂断请使用红色按钮。页面不会自动接听或保存录音。</p>
+      </div>
+    </div>
+  </div>
+  <aside id="callDock" class="call-dock" aria-label="当前电话" hidden>
+    <button id="callDockOpen" class="call-dock-main"><span class="call-dock-icon" aria-hidden="true">☎</span><span><strong id="callDockPeer"></strong><small id="callDockStatus"></small></span></button>
+    <button class="btn primary" id="callDockAnswer" hidden>接听</button><button class="btn danger" id="callDockHangup">挂断</button>
+  </aside>
 
   <!-- 发送短信弹窗 -->
   <div class="modal-backdrop" id="smsModal" hidden>
@@ -111,6 +155,7 @@
   <!-- Toast -->
   <div class="toast-wrap" id="toastWrap"></div>
 
+  <script src="callaudio.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -52,6 +52,15 @@ func (m *Manager) Broadcast(title, body string) {
 	}
 }
 
+// IncomingCall 仅向已启用的 Bark 通道推送来电，沿用重试策略。
+func (m *Manager) IncomingCall(title, body string) {
+	for _, ch := range m.snapshot() {
+		if ch.Enabled && ch.Type == "Bark" {
+			go m.deliver(ch, title, body)
+		}
+	}
+}
+
 // snapshot 返回通道列表的深拷贝。
 func (m *Manager) snapshot() []model.Channel {
 	m.mu.Lock()

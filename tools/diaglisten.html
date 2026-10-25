@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>通话试听 · smspub</title>
+<style>
+  :root { color-scheme: light dark; font: 16px/1.65 system-ui, sans-serif; }
+  body { max-width: 650px; margin: 10vh auto; padding: 24px; }
+  h1 { font-size: 28px; margin-bottom: 8px; }
+  p { opacity: .85; }
+  button, select { font: inherit; padding: 8px 16px; border-radius: 8px; margin: 4px; }
+  #status { padding: 18px; border: 1px solid #8886; border-radius: 12px; margin-top: 24px; }
+  small { display: block; opacity: .7; margin-top: 12px; }
+</style>
+<h1>通话试听</h1>
+<p>收听 USB 模组当前通话的声音。拨号、接听和挂断仍在 smspub 电话窗口操作。</p>
+<p>当前支持单向收听，电脑麦克风还不能送入电话。两个声道的收发方向尚未确认。</p>
+<label>试听声道 <select id="channel"><option value="0">声道 0</option><option value="1">声道 1</option><option value="stereo">双声道</option></select></label>
+<button id="start">开始收听</button><button id="stop" disabled>停止收听</button>
+<div id="status" role="status" aria-live="polite">尚未连接</div>
+<small>此页面不保存录音。停止收听不会挂断电话。</small>
+<script>
+'use strict';
+const start = document.querySelector('#start'), stop = document.querySelector('#stop');
+const status = document.querySelector('#status'), channel = document.querySelector('#channel');
+let controller, audio, sources = new Set();
+
+function release() {
+  controller?.abort();
+  for (const source of sources) { try { source.stop(); } catch {} }
+  sources.clear();
+  if (audio) audio.close().catch(() => {});
+  audio = null; controller = null;
+  start.disabled = false; stop.disabled = true; channel.disabled = false;
+}
+stop.onclick = () => { release(); status.textContent = '已停止收听，通话不受影响'; };
+window.addEventListener('pagehide', release);
+start.onclick = async () => {
+  start.disabled = true; stop.disabled = false; channel.disabled = true;
+  controller = new AbortController();
+  const session = controller;
+  let format, nextAt = 0, dropped = 0;
+  status.textContent = '正在连接…';
+  try {
+    audio = new AudioContext({latencyHint: 'interactive'});
+    await audio.resume();
+    if (session.signal.aborted) return;
+    const response = await fetch('/audio?channel=' + channel.value, {
+      headers: {'X-Diag-Listen': '1'}, signal: session.signal, cache: 'no-store'
+    });
+    if (!response.ok) throw new Error(response.status === 409 ? '已有其他页面正在收听，请先停止' : '诊断口无法打开，请检查设备是否被占用');
+    const reader = response.body.getReader(), decoder = new TextDecoder();
+    let pending = '';
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      pending += decoder.decode(value, {stream: true});
+      if (pending.length > 200000) throw new Error('音频流格式异常');
+      let newline;
+      while ((newline = pending.indexOf('\n')) >= 0) {
+        const event = JSON.parse(pending.slice(0, newline));
+        pending = pending.slice(newline + 1);
+        if (event.type === 'format') { format = event; continue; }
+        if (event.type === 'status') {
+          status.textContent = event.frames
+            ? `已接收 ${(event.frames * .02).toFixed(1)} 秒音频 · 时间戳间断 ${event.gaps} · 播放丢帧 ${dropped}`
+            : event.records ? '已连接，等待通话音频…' : '诊断口没有返回日志；该模组的日志服务可能未开启';
+          continue;
+        }
+        if (event.type !== 'pcm' || !format) continue;
+        // 有界排队：网络/后台标签页积压时跳过帧，避免延迟持续增加。
+        const now = audio.currentTime;
+        if (nextAt - now > .3) { dropped++; continue; }
+        nextAt = Math.max(nextAt, now + .06);
+        const bytes = Uint8Array.from(atob(event.data), c => c.charCodeAt(0));
+        if (bytes.length !== 320 * format.channels * 2) throw new Error('音频帧长度异常');
+        const view = new DataView(bytes.buffer);
+        const buffer = audio.createBuffer(format.channels, 320, format.rate);
+        for (let c = 0; c < format.channels; c++) {
+          const samples = buffer.getChannelData(c);
+          for (let i = 0; i < 320; i++) samples[i] = view.getInt16((i * format.channels + c) * 2, true) / 32768;
+        }
+        const source = audio.createBufferSource();
+        source.buffer = buffer; source.connect(audio.destination);
+        sources.add(source); source.onended = () => { sources.delete(source); source.disconnect(); };
+        source.start(nextAt); nextAt += .02;
+      }
+    }
+    if (!session.signal.aborted) status.textContent = '音频连接已结束，请重新连接';
+  } catch (error) {
+    if (error.name !== 'AbortError' && !session.signal.aborted) status.textContent = error.message;
+  } finally {
+    if (controller === session) release();
+  }
+};
+</script>
+</html>

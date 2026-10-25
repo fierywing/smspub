@@ -2,6 +2,7 @@ package at
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -23,66 +24,68 @@ func WatchSerialByPath(ctx context.Context, onChange func()) error {
 	return watchDir(ctx, serialByPathDir, onChange)
 }
 
-// watchDir 监听 dir 的文件系统增删事件（inotify），防抖后触发 onChange。
-// 注意不能用 IN_NONBLOCK：无事件时 Read 立即返回 EAGAIN，读泵会当场退出；
-// 阻塞读 + ctx 取消时关闭 fd 解除阻塞，事件到达再提交给防抖循环。
+// watchDir keeps ownership of the inotify descriptor in one goroutine. Polling
+// a nonblocking descriptor lets cancellation finish before the descriptor is
+// closed, so a stale read/close cannot touch a subsequently reused descriptor.
 func watchDir(ctx context.Context, dir string, onChange func()) error {
-	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC)
+	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
 	if err != nil {
 		return err
 	}
-	// ctx 取消 → 关闭 fd 解除读阻塞（AfterFunc 在独立 goroutine 执行）。
-	// 关闭后读返回 EBADF，读泵随之退出；stop/defer 双保险，二次 Close 无害。
-	stop := context.AfterFunc(ctx, func() { _ = unix.Close(fd) })
-	defer stop()
-	defer func() { _ = unix.Close(fd) }()
-
+	defer unix.Close(fd)
 	mask := uint32(unix.IN_CREATE | unix.IN_DELETE | unix.IN_MOVED_TO | unix.IN_MOVED_FROM)
 	if _, err := unix.InotifyAddWatch(fd, dir, mask); err != nil {
 		return err
 	}
-
-	events := make(chan struct{}, 1)
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := unix.Read(fd, buf)
-			if n > 0 {
-				select {
-				case events <- struct{}{}:
-				default: // 已有待处理信号，合并
-				}
+	buf := make([]byte, 4096)
+	var due time.Time
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		timeout := 100
+		if !due.IsZero() {
+			remaining := int(time.Until(due)/time.Millisecond) + 1
+			if remaining < 0 {
+				remaining = 0
 			}
-			if err != nil {
-				return // fd 已关闭（ctx 取消）
+			if remaining < timeout {
+				timeout = remaining
 			}
 		}
-	}()
-
-	// 防抖定时器：先停掉 0 值首触，之后事件到达即重置
-	timer := time.NewTimer(time.Hour)
-	if !timer.Stop() {
-		<-timer.C
-	}
-	defer timer.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case _, ok := <-events:
-			if !ok {
-				events = nil // 读泵退出：停止触发，等 ctx 取消
-				continue
-			}
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
+		poll := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+		_, err := unix.Poll(poll, timeout)
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if poll[0].Revents&(unix.POLLERR|unix.POLLHUP|unix.POLLNVAL) != 0 {
+			return errors.New("串口目录监听已断开")
+		}
+		if poll[0].Revents&unix.POLLIN != 0 {
+			for ctx.Err() == nil {
+				n, err := unix.Read(fd, buf)
+				if n > 0 {
+					due = time.Now().Add(debounceDelay)
+				}
+				if errors.Is(err, unix.EAGAIN) {
+					break
+				}
+				if errors.Is(err, unix.EINTR) {
+					continue
+				}
+				if err != nil {
+					return err
+				}
+				if n == 0 {
+					break
 				}
 			}
-			timer.Reset(debounceDelay)
-		case <-timer.C:
+		}
+		if !due.IsZero() && !time.Now().Before(due) && ctx.Err() == nil {
+			due = time.Time{}
 			onChange()
 		}
 	}

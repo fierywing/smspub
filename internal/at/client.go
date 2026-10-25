@@ -365,6 +365,13 @@ func (c *Client) dispatchLocked(line string) (string, bool) {
 		c.cmtWait = false
 		return c.cmtFirst + "\n" + line, true
 	}
+	// 通话事件即使插在短信、心跳或重同步中也必须上报。
+	if isCallURC(line) {
+		if pc := c.pending; pc != nil && !pc.draining && isCallResult(line) && isCallCommand(pc.cmd) {
+			c.finishLocked(pc, &Error{Kind: "CALL", Msg: line})
+		}
+		return line, true
+	}
 	if pc := c.pending; pc != nil {
 		// 重同步哨兵：回显前到达的都是上条超时命令的迟到行，丢弃；最终结果行
 		// （OK/ERROR/+CME/+CMS）即使迟到也恰好说明"流已到命令边界"——属于哨兵

@@ -48,6 +48,8 @@ var errNoPingReply = errors.New("modem: ping 响应中无成功 reply")
 
 // Callbacks 模块对外的事件回调。
 type Callbacks struct {
+	// OnIncomingCall 每通新语音来电回调一次；回调应立即返回，不执行网络等待。
+	OnIncomingCall func(model.Call)
 	// OnSMS 收到并解码成功的每段短信（长短信拼接由 sms 层完成）。
 	OnSMS func(d pdu.Deliver)
 	// OnLog 日志回调；nil 时默认写入 logger（scope 为 "modem/<卡ID>"）。
@@ -74,10 +76,16 @@ type Modem struct {
 	registered bool   // 最近一次 CEREG 轮询的注册状态
 	csqRaw     string // 最近一次读数为 0 时的原始 CSQ 应答（noteSignalRaw 去重用）
 	cesqRaw    string // 最近一次原始 CESQ 应答
+	voice      model.VoiceStatus
+	callMu     sync.Mutex // 串行化通话查询和操作，避免两个拨号请求同时通过空闲检查
 
 	ref     atomic.Uint32 // 出站长短信 ref 计数器（uint8 回绕）
 	running atomic.Bool   // 防止并发/重复 Run
 	backoff atomic.Int32  // 重连退避轮次（连接成功归零）
+	// cmtiMode 当前连接实际生效的收信模式是否为 CMTI 存储通知（AT+CNMI 的 mt 参数
+	// = 1）。为真时状态轮询顺带巡检模块存储区：+CMTI 通知可能因串口超时/USB
+	// 复位/命令在途重同步而丢失，只靠通知会让短信一直躺在存储区直到下次重连。
+	cmtiMode atomic.Bool
 
 	// lastUSBReset 最近一次 USB 自愈复位时刻（usbreset.go 的 maybeUSBReset）。
 	// 仅 Run goroutine 读写，不与其他 goroutine 并发，普通字段即可。
@@ -193,9 +201,11 @@ func backoffDelay(base, max, jitter time.Duration, attempt int) time.Duration {
 
 // conn 一次连接生命周期内持有的资源。
 type conn struct {
-	cli  *at.Client
-	urc  chan string   // URC 队列：读泵回调只入队，由 urcLoop 转移处理
-	done chan struct{} // 关闭后 urcLoop/pollLoop 退出
+	notifiedCalls map[int]bool // m.mu 保护；呼叫结束后允许复用相同 ID
+	cli           *at.Client
+	urc           chan string   // URC 队列：读泵回调只入队，由 urcLoop 转移处理
+	done          chan struct{} // 关闭后 urcLoop/pollLoop 退出
+	callWake      chan struct{} // 合并通话 URC 触发的状态刷新
 	// hbDead 本连接由心跳判定失联（区别于读泵死亡：后者多为 USB 掉线/软重启
 	// 引发的重枚举，模块刚上电时 AT 短暂无应答属正常，不应据此立即复位）。
 	hbDead atomic.Bool
@@ -209,6 +219,7 @@ func (c *conn) close(m *Modem) {
 	}
 	if m.curConn == c {
 		m.curConn = nil
+		m.voice = model.VoiceStatus{}
 	}
 	m.mu.Unlock()
 	_ = c.cli.Close() // 幂等；等待读泵退出
@@ -300,6 +311,7 @@ func (m *Modem) Run(ctx context.Context) {
 			}
 		})
 		go m.pollLoop(ctx, c)
+		go m.callLoop(ctx, c)
 		// 读泵死亡观察者：USB 掉线等场景下读端口立即报错，无需等心跳逐次失败
 		go func() {
 			select {
@@ -385,9 +397,10 @@ func (m *Modem) connect(ctx context.Context) (*conn, error) {
 		return nil, fmt.Errorf("打开串口 %s@%d 失败: %w", m.cfg.Device, m.cfg.Baud, err)
 	}
 	c := &conn{
-		cli:  at.NewClient(port, m.atLogf),
-		urc:  make(chan string, urcQueueSize),
-		done: make(chan struct{}),
+		cli:      at.NewClient(port, m.atLogf),
+		urc:      make(chan string, urcQueueSize),
+		done:     make(chan struct{}),
+		callWake: make(chan struct{}, 1),
 	}
 	// URC 回调在读泵 goroutine 上执行：只入队（非阻塞），
 	// 绝不在回调内直接调 Command，由 urcLoop 在自己的 goroutine 处理。
@@ -432,6 +445,10 @@ func (m *Modem) urcLoop(ctx context.Context, c *conn) {
 
 // handleURC 处理一条 URC：+CMT 直投与 +CMTI 存储通知；其余忽略。
 func (m *Modem) handleURC(ctx context.Context, cli *at.Client, line string) {
+	if callEvent(line) {
+		m.wakeCalls(cli)
+		return
+	}
 	switch {
 	case strings.HasPrefix(line, "+CMT:"):
 		// CNMI=2,2 直投：首行为头，次行为 PDU（at 层已合并为 "首行\n次行"）
@@ -629,6 +646,37 @@ func (m *Modem) pollOnce(ctx context.Context, cli *at.Client) {
 			break
 		}
 	}
+	// CMTI 存储通知模式下巡检存储区。+CMTI 通知是"尽力而为"的：串口命令超时后的
+	// 重同步会丢弃迟到行，USB 复位/掉线期间到达的也不会补发；通知一旦丢失，短信
+	// 会一直留在模块存储区，直到下一次重连的 drainStored 才被取回——表现为"收信
+	// 很慢"。每轮轮询（默认 20s）扫一次存储区，把丢失的通知兜住，最多延迟一轮。
+	// 直投模式（2,2）短信不落存储，扫也扫不到东西，故仅在 CMTI 模式下执行。
+	if m.cmtiMode.Load() {
+		m.sweepStored(ctx, cli)
+	}
+}
+
+// sweepStored 巡检模块存储区：单条 AT+CMGL=4，把积压短信逐条补收。
+// 与 drainStored 的区别：CMGL 失败只记日志、不做逐索引回退——那是上线时的
+// 一次性兜底，若每轮轮询都跑（每槽位一次超时）会把串口占满、反而拖慢收信。
+func (m *Modem) sweepStored(ctx context.Context, cli *at.Client) {
+	lines, err := m.cmd(ctx, cli, "AT+CMGL=4", m.stepTimeout)
+	if err != nil {
+		m.logf("warn", "AT+CMGL=4 巡检失败: %v", err)
+		return
+	}
+	idx := cmglIndexes(lines)
+	if len(idx) == 0 {
+		return
+	}
+	// 正常到达的短信由 +CMTI 即时读走，巡检发现积压 = 通知丢过，值得记一条。
+	m.logf("info", "巡检发现 %d 条滞留短信（+CMTI 通知可能丢失），开始补收", len(idx))
+	for _, i := range idx {
+		if ctx.Err() != nil {
+			return
+		}
+		m.readStored(ctx, cli, i)
+	}
 }
 
 // initSequence 上电初始化序列。返回 error 时调用方关闭串口等待重连。
@@ -673,18 +721,11 @@ func (m *Modem) initSequence(ctx context.Context, cli *at.Client) error {
 	if _, err := m.cmd(ctx, cli, "AT+CMGF=0", to()); err != nil {
 		return fmt.Errorf("AT+CMGF=0 失败: %w", err)
 	}
-	// 6. 新短信 URC：优先 2,2 直投；失败回退 2,1（CMTI 存储通知）；
-	//    两者都失败则收短信不可用，但发送/Ping 继续可用。
-	if _, err := m.cmd(ctx, cli, "AT+CNMI=2,2,0,0,0", to()); err != nil {
-		m.logf("warn", "AT+CNMI=2,2 失败: %v，回退 2,1", err)
-		if _, err := m.cmd(ctx, cli, "AT+CNMI=2,1,0,0,0", to()); err != nil {
-			m.logf("warn", "AT+CNMI=2,1 也失败: %v，收短信不可用（发送/Ping 不受影响）", err)
-		} else {
-			m.logf("info", "使用 CNMI=2,1（CMTI 存储通知模式）")
-		}
-	} else {
-		m.logf("info", "使用 CNMI=2,2（直投模式）")
-	}
+	// 6. 新短信 URC。默认 2,2 直投（短信随到随推，不落存储）；card.StoreSMS 时
+	//    优先 2,1 存储通知（先落模块存储区，+CMTI 通知后再读回），设备掉线期间
+	//    到达的短信可由重连时的 drainStored 补收，代价是多一次读回往返。
+	//    首选失败回退另一模式；两者都失败则收短信不可用，但发送/Ping 继续可用。
+	m.setCNMI(ctx, cli, to())
 	// 7. 网络注册 URC（可选）
 	if _, err := m.cmd(ctx, cli, "AT+CEREG=2", to()); err != nil {
 		m.logf("warn", "AT+CEREG=2 失败（继续）: %v", err)
@@ -698,7 +739,36 @@ func (m *Modem) initSequence(ctx context.Context, cli *at.Client) error {
 	// 10. 补收积压短信：离线期间到达的存在模块存储区里，CNMI 不会补推，
 	//     必须主动扫描，否则这些短信永远收不到。
 	m.drainStored(ctx, cli)
+	// 语音探测失败不影响短信；不改 IMS/VoLTE 或音频路由等厂商设置。
+	m.initVoice(ctx, cli)
 	return nil
+}
+
+// setCNMI 设置新短信上报模式（初始化序列第 6 步）。按 card.StoreSMS 选择首选：
+//   - false（默认）：先 2,2 直投，短信随到随推、不落存储；
+//   - true：先 2,1 存储通知，短信先落模块存储区，+CMTI 通知后由 readStored 读回，
+//     设备掉线期间到达的短信能在重连 drainStored 时补收（代价是多一次读回往返）。
+//
+// 首选失败回退另一模式；两者都失败记日志但不致命（发送/Ping 不受影响）。
+func (m *Modem) setCNMI(ctx context.Context, cli *at.Client, timeout time.Duration) {
+	primary, fallback := "AT+CNMI=2,2,0,0,0", "AT+CNMI=2,1,0,0,0"
+	primaryDesc, fallbackDesc := "2,2（直投模式）", "2,1（CMTI 存储通知模式）"
+	if m.cfg.StoreSMS {
+		primary, fallback = fallback, primary
+		primaryDesc, fallbackDesc = fallbackDesc, primaryDesc
+	}
+	if _, err := m.cmd(ctx, cli, primary, timeout); err == nil {
+		m.cmtiMode.Store(strings.HasPrefix(primary, "AT+CNMI=2,1"))
+		m.logf("info", "使用 CNMI=%s", primaryDesc)
+		return
+	}
+	m.logf("warn", "AT+CNMI=%s 失败，回退另一模式", primaryDesc)
+	if _, err := m.cmd(ctx, cli, fallback, timeout); err != nil {
+		m.logf("warn", "AT+CNMI=%s 也失败: %v，收短信不可用（发送/Ping 不受影响）", fallbackDesc, err)
+		return
+	}
+	m.cmtiMode.Store(strings.HasPrefix(fallback, "AT+CNMI=2,1"))
+	m.logf("info", "使用 CNMI=%s", fallbackDesc)
 }
 
 // readCSQ 读取并缓存信号强度；读数为 0 时顺带记录原始应答（见 noteSignalRaw）。

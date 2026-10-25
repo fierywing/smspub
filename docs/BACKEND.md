@@ -97,6 +97,7 @@ func ProbePort(device string, baud int, rounds int, budget time.Duration) (model
 要求：
 - 行缓冲：处理 `\r\n`、单独 `\n`、`AT+CMGS` 后的 `> ` 无换行提示符；命令串行化（互斥），同一时刻只允许一条挂起命令。
 - 命令在途时到达的行若不匹配最终结果/提示符，进中间行缓冲；特别地 `+CMT:` 要识别为 URC 并把下一行 PDU 合并（CNMI 2,2 场景命令极少在途，但必须正确）。
+- 通话 URC（RING、+CRING、+CLIP、CIEV、NO CARRIER/BUSY/NO ANSWER/NO DIALTONE）在命令在途和重同步时仍上报；结束结果仅结束 ATD/ATA/ATH/CHUP 命令，不结束短信、心跳和查询命令。
 - 超时自愈：命令超时后，下一条命令先发重同步哨兵 "AT" 排空上条命令的迟到应答（哨兵失败按原命令错误返回）；CMGS 提示符等待超时或写正文数据失败时写 ESC(0x1B) 中止 modem 的正文输入态。
 - Close 后所有挂起命令立即返回 error；重复 Close 安全；Stop 不泄漏 goroutine。
 - 测试：内存 fake Port（脚本化应答、可注入延迟）：OK/ERROR/CME 解析、回显剥离、URC 分发、+CMT 两行合并、CMGS 提示符交互、超时、并发命令串行化、心跳失联触发 onDead。
@@ -118,12 +119,15 @@ func (m *Modem) Ping(ctx context.Context, target string) (model.PingResult, erro
 func (m *Modem) SoftRestart(ctx context.Context) error   // AT+CFUN=1,1 软重启模块
 func (m *Modem) Exec(ctx context.Context, cmd string) (string, error) // AT 调试控制台透传
 func (m *Modem) Status() (online bool, rssi int, number string) // 缓存值，随时可调
+func (m *Modem) VoiceStatus() model.VoiceStatus // 缓存快照；calls 总是数组
+func (m *Modem) ControlCall(ctx context.Context, action, number string) (model.VoiceStatus, error)
 ```
 
 要求：
-- **初始化序列**（任一步失败按标注处理）：`ATE0` → `AT`（3 次重试，仍失败→关闭串口等 5s 重来）→ `ATI`（记录型号）→ `AT+CMEE=2` → `AT+CMGF=0`（致命）→ `AT+CNMI=2,2,0,0,0`；失败回退 `AT+CNMI=2,1,0,0,0`（CMTI 模式：URC `+CMTI: "SM",<idx>` → `AT+CMGR=<idx>` 读取 PDU）；两者都失败→记日志，收短信不可用但继续（发送/Ping 可用）→ `AT+CEREG=2`（可选）→ 读 `AT+CSQ`、`AT+CNUM`（补卡号，仅当 cfg.Number 为空）→ 标记 online。
-- **心跳/自愈**：SetHeartbeat(30s, 3, onDead)；onDead → 置 offline、关闭 client、等 5s、重开串口重跑初始化。状态轮询每 20s：`AT+CSQ`（99→0）、`AT+CEREG?`（`0,1`/`0,5` 算已注册）。Run 退出时清理资源（ctx 取消）。
+- **初始化序列**（任一步失败按标注处理）：`ATE0` → `AT`（3 次重试，仍失败→关闭串口等 5s 重来）→ `ATI`（记录型号）→ `AT+CMEE=2` → `AT+CMGF=0`（致命）→ 新短信 URC 模式：默认先 `AT+CNMI=2,2,0,0,0`（直投）；`card.StoreSMS` 为真时先 `AT+CNMI=2,1,0,0,0`（CMTI 存储通知，离线期间到达的短信可由重连补收）；首选失败回退另一模式，两者都失败→记日志，收短信不可用但继续（发送/Ping 可用）→ `AT+CEREG=2`（可选）→ 读 `AT+CSQ`、`AT+CNUM`（补卡号，仅当 cfg.Number 为空）→ `drainStored` 补收积压 → 标记 online。CMTI 模式 URC `+CMTI: "SM",<idx>` → `AT+CMGR=<idx>` 读取 PDU。
+- **心跳/自愈**：SetHeartbeat(30s, 3, onDead)；onDead → 置 offline、关闭 client、等 5s、重开串口重跑初始化。状态轮询每 20s：`AT+CSQ`（99→0）、`AT+CEREG?`（`0,1`/`0,5` 算已注册）。CMTI 存储通知模式下，每轮状态轮询额外发一条 `AT+CMGL=4` 巡检存储区（`sweepStored`）：`+CMTI` 通知是尽力而为的（命令超时后的重同步会丢弃迟到行、USB 掉线期间不补发），通知丢失时短信会滞留到下次重连，巡检把最多一轮（默认 20s）内的滞留短信补收掉。巡检不做逐索引回退（避免占满串口）。Run 退出时清理资源（ctx 取消）。
 - **发送**：CMGF=0；`pdu.EncodeSubmit` 逐段 `AT+CMGS=<HexLen>` + CommandWithData(PDU+\x1A)；内部维护 uint8 ref 计数器（整条消息一个 ref，递增回绕）。CMTI 模式下读完 CMGR 后 `AT+CMGD=<idx>` 删除，防止 SIM 存储塞满。
+- **电话**：补收短信后增加非致命语音探测（CLCC 查询、CLIP=1）；已知 ML307A-DCLN/GCLN/DL 跳过。成功后每 2s 及通话 URC（含固件主动上报的 `+CLCC:`）到达时刷新 CLCC。`ControlCall` 串行执行查询和操作：dial 仅允许空闲且号码为 1–20 位数字、可带前导 +；answer 仅允许单通 incoming；hangup 用 ATH 全部挂断，查询失败也允许尝试。拨号和接听不自动重试；OK 不等于接通。实测固件行为适配：①ML307A-DSLN 的 `ATH` 挂断成功以 `NO CARRIER` 结束命令，hangup/answer 对这类呼叫结果行（`*at.Error` Kind=CALL）视为已执行，以随后的 CLCC 复查为准；②状态变化上报的 `+CLCC:` 可被并入在途查询的响应行，`parseCalls` 按呼叫 idx 去重（重复来电条目会卡死 answer 的单呼校验）。返回 `VoiceStatus{supported,calls,error?}`；calls 项为 `{id,direction,state,number}`，state 为 active/held/dialing/alerting/incoming/waiting。查询失败保留旧状态并设置 error；连接关闭清空状态；旧连接结果不能覆盖新连接。生产前端仅控制通话；实验性 USB 诊断 PCM 接收和独立浏览器试听使用 `tools/diagpcm.py` / `tools/diaglisten.py`，未实现麦克风上行，不改变 Go 通话 API。2026-10-23 电信卡实板验收：呼出 dialing→alerting→active→挂断全链路通过，语音 mode=0。
 - **Ping**：`AT+CGACT=1,1` 激活 PDP（等 `+CGACT: 1,1`）→ 按型号选择：中移 CMCC/ML307 `AT+MPING="<target>",5,3,32`（结果 `+MPING: 0,"<ip>",<len>,<rtt>` URC 在 OK 后异步到达，无 TTL 记 0）；Quectel `AT+QPING=1,"<target>",32,3`；未知型号先试 QPING，ERROR 再试 Huawei `AT^PING="<target>"`；解析成功回复取首个 reply 的时延与 TTL（拿不到记 0）；结束 `AT+CGACT=0,1` 关闭。整体超时由 ctx 控制（默认 30s）。
 - 短信到达：CNMI 2,2 的 `+CMT: ...` 两行 → `pdu.DecodeDeliver` → OnSMS；CMTI 模式按上述 CMGR 流程。所有异常（解析失败等）记日志不 panic。
 - 测试：fake at.Port 脚本化模拟模块（初始化序列、CMGS 发送含长短信分段、QPING 应答解析、CMT 直投、CMTI→CMGR→CMGD、CSQ 轮询），重点验证状态机与重试路径。
@@ -280,6 +284,7 @@ Go 1.22 `http.ServeMux` 路由；无登录鉴权（部署在可信内网）。**
 | POST `/api/config` | body `model.Config` → `{"ok":true}` / `{"ok":false,"error":"..."}` |
 | GET `/api/config/channels` | → `model.Channel[]` |
 | POST `/api/cards/{id}/sms` | `{"to","text"}` → `{"ok":true}` / `{"ok":false,"error":"..."}` |
+| POST `/api/cards/{id}/call` | `{"action":"dial","to":"10086"}` / `{"action":"answer"}` / `{"action":"hangup"}` → `{"ok":true,"voice":VoiceStatus}`；参数非法 400，状态冲突 409，语音不可用 422 |
 | POST `/api/cards/{id}/ping` | → `{"ok":true,"ip","latency","ttl","rssi"}` / `{"ok":false,"error"}` |
 | POST `/api/cards/{id}/restart` | → `{"ok":true}` |
 | POST `/api/at/{id}` | `{"cmd":"ATI"}` → `{"ok":true,"output":"..."}` |
@@ -288,12 +293,33 @@ Go 1.22 `http.ServeMux` 路由；无登录鉴权（部署在可信内网）。**
 
 - 所有 API 响应 JSON、错误统一 `{"ok":false,"error":"中文可读信息"}`；panic 用 recover 中间件兜底。未知卡片 ID → 404 `{"ok":false,"error":"卡片不存在"}`。
 - ping 响应中的 `rssi` 取该卡当前缓存值。
+- GET `/api/cards` 每项增加 `voice: VoiceStatus`，只读取缓存，不在 HTTP 查询中访问串口。
+- `voice.calls` 保留全部 CLCC 呼叫，额外包含原始 `mode`。存在数据／未知类型呼叫时也不视为空闲；answer 仅接受单通 incoming 且 mode 为语音阶段（0/3/4/5），不推测厂商非标准枚举。浏览器已接入实验性 USB 收听与麦克风上行，验证范围见 `ML307A-DIAG-STREAM.md`；硬件接口依据见 `ML307A-VOICE.md`，诊断收音进展、日志开关限制和独立试听工具见 `ML307A-DIAG-PCM.md`。
 
 ## cmd/smspub/main.go
 
-- flag：`-c` 配置路径（默认 `./config.json`）、`-listen` 覆盖监听地址、`-dev` 从磁盘 web/ 目录提供静态文件（调试用）。
+- flag：`-c` 配置路径（默认 `./config.json`）、`-listen` 覆盖 HTTP 监听地址、`-dev` 从磁盘 web/ 目录提供静态文件（调试用）。可同时指定 `-https-listen`、`-tls-cert`、`-tls-key` 增加 HTTPS 入口，保留原 HTTP；证书在启动模组前加载校验，最低 TLS 1.2。两个入口使用同一 handler 并在退出时一起关闭。
 - 流程：logger.New → hub.New → hub.Start(ctx)（goroutine）→ http.Server{Listen, Handler: web.New(...)}；HTTP 监听失败（如端口占用）记日志后以退出码 1 退出（systemd Restart=on-failure 可拉起）；SIGINT/SIGTERM 优雅退出（server.Shutdown + ctx cancel）。`RESET`/reboot 走 syscall.Exec，无需特殊处理。
 
 ## README.md
 
 中文：项目简介、特性、构建（`go build ./cmd/smspub`，交叉编译示例）、快速开始、config.json 全字段说明（含 11 种通道的 config 键）、管理员短信指令、API 一览表、常见问题（串口权限 dialout、CNMI 模式差异、RESET 需要 systemd 拉起或自带 exec 重启说明）。
+
+## 网页电话音频
+
+- `GET /api/cards/{id}/audio/status`：返回 `{receive:bool,microphone:bool,reason:string}`；只读 sysfs、在线状态及 AT 固件版本，不打开诊断口。`microphone` 表示固件版本可尝试连续上行，开启时还会核对函数表与常量。`receive` 表示找到支持的接口，不保证日志开关已开启或已有音频帧。
+- `GET /api/cards/{id}/audio?channel=stereo`：须带 `X-Call-Audio: 1`；channel 可选 `0/1/stereo`。Origin 若存在须同源，响应为不缓存的 `application/x-ndjson`。不存在卡片 404，离线或接口占用 409，不支持／设备打不开 503。
+
+流事件：`{type:"format",rate:16000,channels:1|2}`，随后 `{type:"pcm",data:"base64 s16le"}`，每帧 320 样本／声道、20 ms；双声道交错。另有约 500 ms 一次的 `{type:"status",bytes,records,frames,gaps}`，硬件中断时发 `{type:"error",message}` 并结束。浏览器主动取消请求释放诊断口；3 秒写超时避免慢客户端长期占用。反向代理须关闭此端点的响应缓冲，服务发送 `X-Accel-Buffering: no`。
+
+同一模组只允许一个诊断 owner，浏览器和 Python 诊断工具共享排他锁。仅支持 Linux 上 2ecc:3012 同一 USB 模组的 interface 04，AT 控制仍由原串口队列持有。不保存录音、不自动接听。
+
+**连续麦克风（2026-10-24）**：上述 GET 增加 `&microphone=1` 可同时收听和发送，要求已接通的语音呼叫，以及经过版本、DB／命令表／HAL 常量校验的 MTSH1S00 固件。初始化仅修改已确认的音频 RAM，结束时停止并复位。format 事件增加 `{microphone:true,session:"随机令牌",uplinkRate:4000,uplinkFrameBytes:160}`。
+
+`POST /api/cards/{id}/audio/microphone` 须携带 `X-Call-Audio: 1` 和 `application/json`，body 为 `{session,sequence,data:"base64 PCM"}`。每个请求接受 1–10 帧，单帧为 4 kHz／mono／s16le／20 ms／160 字节；请求体上限 4096 字节。session 必须属于当前音频 GET，sequence 严格递增。非法音频 400，令牌／呼叫／设备状态不符 409，跨站请求 403。队列最多十帧。接通期间未供音时持续发送全零静音帧，不因缺少麦克风块而超时结束；网页缺少采集帧时每约 100 ms 上传五帧静音，服务端每 20 ms 向模组供一帧，正常语音到达后替换静音。任一方挂断或关闭 GET 时停止播放、清空缓冲并恢复原音频设置。真实 USB／网络故障仍会释放本次连接，网页退避重连直到通话结束或用户停止。
+
+浏览器使用 AudioWorklet 与 getUserMedia，须 HTTPS 或 localhost。验证范围和带宽限制见 [连续 USB 上行](ML307A-DIAG-STREAM.md)。
+
+### Bark 来电提醒
+
+`modem.Callbacks.OnIncomingCall` 在成功的 CLCC 快照首次发现 incoming/waiting 语音呼入时触发；按连接和呼叫 ID 去重，呼叫消失后释放 ID，查询失败保留去重状态，呼出与数据呼叫不提醒。回调在释放 modem 状态锁后执行，hub 读取最新卡配置组装来电号码及接听卡号，通过 `push.Manager.IncomingCall` 仅向启用的 Bark 通道异步发送，沿用现有失败重试策略。无需网页在线，不改变短信推送，无链接或自动接听。

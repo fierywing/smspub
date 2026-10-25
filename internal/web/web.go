@@ -26,6 +26,7 @@
 package web
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -37,10 +38,12 @@ import (
 	"path"
 	"runtime/debug"
 	"strings"
+	"sync"
 
 	"smspub"
 	"smspub/internal/hub"
 	"smspub/internal/logger"
+	"smspub/internal/voice"
 )
 
 // maxBodySize 请求体大小上限（1MiB）：配置/短信/AT 命令都远小于此值，防御性兜底。
@@ -57,7 +60,13 @@ type Server struct {
 
 	// reboot 进程重启动作，默认 hub.Reboot（syscall.Exec 自我替换）；
 	// 独立成变量仅为测试注入 no-op，避免测试进程被替换。
-	reboot func()
+	reboot          func()
+	resolveAudio    func(string) (voice.Device, error)
+	openAudio       func(string) (audioStream, error)
+	openMicrophone  func(context.Context, string, voice.ATQuery) (microphoneStream, error)
+	microphoneMu    sync.Mutex
+	microphones     map[string]microphoneSession
+	callAudioActive func(string) bool
 }
 
 // New 构造完整 HTTP 处理器：/api/* 提供全部 REST 端点，/ 提供嵌入前端静态文件，
@@ -72,13 +81,22 @@ func newServer(h *hub.Hub, lg *logger.Logger) *Server {
 		lg = logger.New(1024)
 	}
 	s := &Server{hub: h, lg: lg, mux: http.NewServeMux(), reboot: h.Reboot}
+	s.resolveAudio = voice.Resolve
+	s.openAudio = func(device string) (audioStream, error) { return voice.Open(device) }
+	s.openMicrophone = func(ctx context.Context, device string, query voice.ATQuery) (microphoneStream, error) {
+		return voice.OpenDuplex(ctx, device, query)
+	}
+	s.microphones = make(map[string]microphoneSession)
+	s.callAudioActive = s.hasActiveCall
 	s.routes()
 	return s
 }
 
 // handler 组合 panic 兜底、安全响应头、CSRF 防护与全部路由。
 // recover 最外层保证安全头/CSRF 判定本身的异常也能兜底为 500 JSON。
-func (s *Server) handler() http.Handler { return s.withRecover(s.withSecurityHeaders(s.withCSRF(s.mux))) }
+func (s *Server) handler() http.Handler {
+	return s.withRecover(s.withSecurityHeaders(s.withCSRF(s.mux)))
+}
 
 // withSecurityHeaders 为全部响应加 Content-Security-Policy：前端无内联脚本、无
 // 外链资源（脚本/连接来源锁死本站），作为 XSS 纵深防御。例外：img-src 放开
@@ -103,6 +121,10 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/config/channels", s.handleChannels)
 	m.HandleFunc("GET /api/serialports", s.handleSerialPorts)
 	m.HandleFunc("POST /api/cards/{id}/sms", s.handleSMS)
+	m.HandleFunc("POST /api/cards/{id}/call", s.handleCall)
+	m.HandleFunc("GET /api/cards/{id}/audio/status", s.handleAudioStatus)
+	m.HandleFunc("GET /api/cards/{id}/audio", s.handleCallAudio)
+	m.HandleFunc("POST /api/cards/{id}/audio/microphone", s.handleMicrophoneChunk)
 	m.HandleFunc("POST /api/cards/{id}/ping", s.handlePing)
 	m.HandleFunc("POST /api/cards/{id}/restart", s.handleRestart)
 	m.HandleFunc("POST /api/at/{id}", s.handleAT)

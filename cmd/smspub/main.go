@@ -3,7 +3,8 @@
 // flag：
 //
 //	-c 配置文件路径（默认 ./config.json）
-//	-listen 覆盖监听地址（优先于配置文件；配置文件里的 listen 变更需重启生效）
+//	-listen 覆盖 HTTP 监听地址（优先于配置文件；配置文件里的 listen 变更需重启生效）
+//	-https-listen / -tls-cert / -tls-key 同时设置可额外开启 HTTPS
 //	-dev 从磁盘 ./web 目录提供前端文件（前端调试用；默认用编译时嵌入的 smspub.WebFS）
 //
 // RESET 管理员指令 / POST /api/reboot 通过 syscall.Exec 以原始 os.Args 重新拉起自身，
@@ -30,6 +31,9 @@ import (
 func main() {
 	cfgPath := flag.String("c", "config.json", "配置文件路径")
 	listen := flag.String("listen", "", "覆盖监听地址，如 :8080")
+	httpsListen := flag.String("https-listen", "", "额外的 HTTPS 监听地址，如 :8444（需证书）")
+	tlsCert := flag.String("tls-cert", "", "HTTPS PEM 证书文件")
+	tlsKey := flag.String("tls-key", "", "HTTPS PEM 私钥文件")
 	dev := flag.Bool("dev", false, "从磁盘 ./web 目录提供前端静态文件（调试用）")
 	flag.Parse()
 
@@ -47,11 +51,6 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	hubDone := make(chan struct{})
-	go func() {
-		defer close(hubDone)
-		h.Start(ctx)
-	}()
-
 	var handler http.Handler = web.New(h, lg)
 	if *dev {
 		api := handler
@@ -70,23 +69,43 @@ func main() {
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	lg.Infof("main", "HTTP 服务启动于 %s（-dev=%v）", addr, *dev)
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			// 监听失败（如端口被占用）必须以非零码退出，systemd Restart=on-failure
-			// 才会拉起；logger 的环形缓冲与 stderr 镜像在同一把锁内同步写，
-			// Errorf 返回即已完整落盘，可直接 os.Exit。
-			lg.Errorf("main", "HTTP 服务异常退出: %v", err)
-			os.Exit(1)
+	secure, err := httpsServer(*httpsListen, *tlsCert, *tlsKey, handler)
+	if err != nil {
+		log.Fatalf("HTTPS 初始化失败: %v", err)
+	}
+	servers := []*http.Server{srv}
+	if secure != nil {
+		servers = append(servers, secure)
+	}
+	go func() { defer close(hubDone); h.Start(ctx) }()
+	for _, server := range servers {
+		protocol := "HTTP"
+		if server.TLSConfig != nil {
+			protocol = "HTTPS"
 		}
-	}()
+		lg.Infof("main", "%s 服务启动于 %s（-dev=%v）", protocol, server.Addr, *dev)
+		go func(server *http.Server, protocol string) {
+			var err error
+			if server.TLSConfig != nil {
+				err = server.ListenAndServeTLS("", "")
+			} else {
+				err = server.ListenAndServe()
+			}
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				lg.Errorf("main", "%s 服务异常退出: %v", protocol, err)
+				os.Exit(1)
+			}
+		}(server, protocol)
+	}
 
 	<-ctx.Done()
 	lg.Infof("main", "收到退出信号，开始优雅停机")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		lg.Warnf("main", "HTTP 停机超时: %v", err)
+	for _, server := range servers {
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			lg.Warnf("main", "%s 停机超时: %v", server.Addr, err)
+		}
 	}
 	<-hubDone // hub.Start 收到同一 ctx 取消后停止全部卡片再返回
 	lg.Infof("main", "已退出")

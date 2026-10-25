@@ -1,0 +1,185 @@
+{
+  "schemaVersion": 1,
+  "dates": ["2026-10-22", "2026-10-23"],
+  "card": "card3",
+  "firmware": "ML307A-DSLN-MTSH1S00",
+  "overall": "host_ims_path_not_confirmed",
+  "uicc": {
+    "channelOpened": true,
+    "efADRead": true,
+    "channelClosed": true,
+    "akaExecuted": false,
+    "mncLength": 2
+  },
+  "temporaryPdp": {
+    "cid": 3,
+    "definitionCreated": true,
+    "activationCommandAccepted": true,
+    "activeObserved": true,
+    "imsParameters": {
+      "contextReturned": true,
+      "primaryAdvertised": true,
+      "secondaryAdvertised": true
+    },
+    "cleanupConfirmed": true,
+    "baselineActiveCids": [1, 8]
+  },
+  "isolatedRndisTrial": {
+    "rndisBound": true,
+    "networkIsolated": true,
+    "dialupCommandAccepted": true,
+    "connectedObserved": false,
+    "carrier": true,
+    "globalAddressFamilies": ["inet6"],
+    "ipv6DefaultRoute": true,
+    "hostPrefixMatchesContext": {"1": false, "3": false, "8": false},
+    "pcscfConnectivity": [
+      {"family": "ipv6", "tcp5060": false, "error": "TIMEOUT", "udpSipError": "TIMEOUT"},
+      {"family": "ipv6", "tcp5060": false, "error": "TIMEOUT", "udpSipError": "TIMEOUT"}
+    ],
+    "defaultPdnDns": [
+      {"family": "ipv4", "answered": false, "error": "ENETUNREACH"},
+      {"family": "ipv4", "answered": false, "error": "ENETUNREACH"},
+      {"family": "ipv6", "answered": true},
+      {"family": "ipv6", "answered": true}
+    ],
+    "pdpRestored": true,
+    "hostDisconnected": true,
+    "driversRestored": true,
+    "namespaceRemoved": true,
+    "ipv4DefaultRoutesUnchanged": true,
+    "ATPortResponsive": true
+  },
+  "internalSocketTrialAfterExplicitInitialization": {
+    "socketCidConfirmed": true,
+    "pcscf": [
+      {"family": "ipv6", "connected": false},
+      {"family": "ipv6", "connected": false}
+    ],
+    "socketRestored": true,
+    "pdpRestored": true,
+    "applicationConnectionsRestored": true
+  },
+  "finalApplicationStateTrial": {
+    "defaultInitializationAccepted": false,
+    "applicationImsState": null,
+    "pdpActiveObserved": true,
+    "error": "IMS_application_connection_not_confirmed",
+    "pdpRestored": true,
+    "applicationConnectionsRestored": true,
+    "failures": [{"operation": "AT+MIPCALL", "detail": {"httpStatus": 500}}]
+  },
+  "strictSocketTrial": {
+    "defaultInitializationAccepted": false,
+    "error": "default_application_initialization_rejected",
+    "failure": {"httpStatus": 500, "modemError": "CME", "reason": "incorrect parameters"},
+    "temporaryContextCreated": false
+  },
+  "asyncPdpControl": {
+    "defaultInitializationAccepted": false,
+    "initializationPreconditionConfirmed": false,
+    "trials": [
+      {"apnRole": "ims", "observationSeconds": 30, "pdpActiveObserved": true, "applicationConnected": false, "restored": true},
+      {"apnRole": "original_default_apn", "observationSeconds": 30, "pdpActiveObserved": true, "applicationConnected": false, "restored": true}
+    ],
+    "usbCompletionsRead": 183,
+    "incompletePayloads": 0,
+    "rawCaptureSaved": false
+  },
+  "simEpdgConfiguration": {
+    "channelOpened": true,
+    "channelClosed": true,
+    "ustPresent": true,
+    "configurationSupported": false,
+    "configurationConfigured": false,
+    "akaExecuted": false
+  },
+  "operatorEpdgDns": {
+    "queryAccepted": true,
+    "addressFamilies": [4, 4],
+    "addressCount": 2,
+    "invalidDomainControlAddressCount": 0,
+    "controlReturnedSameAddresses": false
+  },
+  "hostIkeSaInit": {
+    "standardSourcePortsBound": true,
+    "endpointsTested": 2,
+    "destinationPorts": [500, 4500],
+    "attemptsPerEndpointPortPerPath": 2,
+    "timeoutSeconds": 4,
+    "existingRoutingPath": "all_timeout",
+    "verifiedMainTableRouteMark": 34,
+    "directRoutingPath": "all_timeout",
+    "validResponseObserved": false,
+    "identitySent": false,
+    "eapExecuted": false
+  },
+  "cellularIkeSaInit": {
+    "cid": 1,
+    "defaultApnModified": false,
+    "rndisBound": true,
+    "networkIsolated": true,
+    "dialupCommandAccepted": true,
+    "dhcpReturnCode": 0,
+    "ipv4LeasePresent": true,
+    "ipv4DefaultRoutePresent": true,
+    "endpointsTested": 2,
+    "destinationPorts": [500, 4500],
+    "standardSourcePortsBound": true,
+    "allTimedOut": true,
+    "driversRestored": true,
+    "namespaceRemoved": true,
+    "pdpDefinitionsUnchanged": true,
+    "pdpStatesUnchanged": true,
+    "applicationStatesUnchanged": true,
+    "hostDisconnected": true,
+    "rawDefaultRouteComparisonEqual": false,
+    "rawComparisonLimitation": "IPv6_RA_expires_countdown_changes_naturally",
+    "ATPortResponsive": true
+  },
+  "cellularRestorationRetest": {
+    "restorationAuditOnly": true,
+    "rndisBound": true,
+    "networkIsolated": true,
+    "ipv4LeasePresent": true,
+    "ipv4DefaultRoutePresent": true,
+    "disconnectAcknowledged": true,
+    "driversRestored": true,
+    "namespaceRemoved": true,
+    "ownPidFileRemoved": true,
+    "pdpDefinitionsUnchanged": true,
+    "pdpStatesUnchanged": true,
+    "applicationStatesUnchanged": true,
+    "hostDisconnected": true,
+    "stableIpv4Ipv6DefaultRoutesUnchanged": true,
+    "ignoredRouteField": "expires",
+    "restorationConfirmed": true
+  },
+  "finalAudit": {
+    "contexts": [
+      {"cid": 1, "pdpType": "IPV4V6", "apn": "ctnet"},
+      {"cid": 8, "pdpType": "IPV4V6", "apn": "IMS"}
+    ],
+    "activeContexts": {"1": 1, "8": 1},
+    "applicationConnections": {"1": "1"},
+    "socket5State": "INITIAL",
+    "socket5Cid": ["1"],
+    "socket5Encoding": ["0", "0"],
+    "hostDisconnected": true,
+    "noActiveCalls": true,
+    "ATPortResponsive": true,
+    "onlineCards": 5,
+    "totalCards": 5,
+    "usbDrivers": {"0": "option", "1": "option", "2": "option"},
+    "temporaryNamespacesAbsent": true,
+    "modemNetworkDevicesAbsent": true,
+    "hostDefaultRouteInterfaces": {"ipv4": ["ens18"], "ipv6": ["ens18"]},
+    "temporaryUsbmonModuleRemoved": true
+  },
+  "akaExecuted": false,
+  "imsRegistered": false,
+  "callsPlaced": false,
+  "incomingCallTested": false,
+  "bidirectionalMediaTested": false,
+  "browserSoftphoneReady": false
+}

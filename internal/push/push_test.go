@@ -951,3 +951,26 @@ func TestTransportErrorNoToken(t *testing.T) {
 		}
 	}
 }
+
+func TestIncomingCallOnlyEnabledBark(t *testing.T) {
+	srv, requests, _ := newStub(t, http.StatusOK)
+	m := newTestManager(t,
+		chanOf("Bark", true, map[string]string{"url": srv.URL + "/bark"}),
+		chanOf("Bark", false, map[string]string{"url": srv.URL + "/disabled"}),
+		chanOf("POST JSON", true, map[string]string{"url": srv.URL + "/other"}),
+	)
+	m.IncomingCall("来电提醒", "有来电")
+	req := nextReq(t, requests)
+	var payload map[string]string
+	if err := json.Unmarshal(req.Body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if req.Path != "/bark" || payload["title"] != "来电提醒" || payload["body"] != "有来电" || len(payload) != 2 {
+		t.Fatalf("unexpected notification: %s %s", req.Path, req.Body)
+	}
+	select {
+	case extra := <-requests:
+		t.Fatalf("unexpected extra channel: %s", extra.Path)
+	case <-time.After(50 * time.Millisecond):
+	}
+}

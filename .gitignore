@@ -28,3 +28,6 @@ __pycache__/
 .idea/
 .vscode/
 .DS_Store
+
+# 本地厂商诊断工具安装包（原始安装包保留本机）
+/docs/CATStudio_V3_1_0_85.zip
