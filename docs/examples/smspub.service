@@ -1,0 +1,20 @@
+[Unit]
+Description=smspub SMS gateway
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=smspub
+Group=smspub
+# 按宿主机串口设备实际组修改，不要设置 PrivateDevices=true。
+SupplementaryGroups=dialout
+WorkingDirectory=/var/lib/smspub
+ExecStart=/opt/smspub/bin/smspub -c /var/lib/smspub/conf/config.json -listen 127.0.0.1:8080
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

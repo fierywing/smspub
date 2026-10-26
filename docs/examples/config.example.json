@@ -1,0 +1,7 @@
+{
+  "listen": ":8080",
+  "ping_target": "8.8.8.8",
+  "auto_cards": true,
+  "cards": [],
+  "channels": []
+}

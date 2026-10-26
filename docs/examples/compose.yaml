@@ -1,0 +1,31 @@
+# 复制到独立部署目录 compose.yaml，配合 deploy.env.example 保存为 .env。
+# 从源码构建的本地版本或已核对的发布镜像，通过 SMSPUB_IMAGE 指定。
+services:
+  smspub:
+    image: "${SMSPUB_IMAGE:?请设置 SMSPUB_IMAGE}"
+    restart: unless-stopped
+    user: "${SMSPUB_UID:-1000}:${SMSPUB_GID:-1000}"
+    group_add:
+      - "${SMSPUB_SERIAL_GID:?请填写宿主机串口设备的数字 GID}"
+    ports:
+      - "${SMSPUB_BIND_IP:-127.0.0.1}:${SMSPUB_PORT:-8080}:8080"
+    command: ["-c", "/app/conf/config.json", "-listen", ":8080"]
+    volumes:
+      - /dev:/dev
+      - ./conf:/app/conf
+      - ./data:/app/data
+    device_cgroup_rules:
+      - "c 188:* rwm"
+      - "c 166:* rwm"
+      - "c 189:* rwm"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -T 3 -O /dev/null http://127.0.0.1:8080/api/cards || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
