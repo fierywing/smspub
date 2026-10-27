@@ -47,3 +47,5 @@ go build -o smspub ./cmd/smspub
 ## 许可证
 
 [AGPL-3.0](LICENSE)
+
+感谢并认可 LINUX DO 社区
